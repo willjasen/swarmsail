@@ -1,0 +1,78 @@
+services:
+  headscale-1:
+    image: headscale/headscale:latest
+    restart: unless-stopped
+    container_name: headscale-1
+    volumes:
+      - ./headscale/1/config:/etc/headscale
+      - ./headscale/1/data:/var/lib/headscale
+    ports:
+      - "8081:8080" # Web interface
+      - "3478:3478/udp" # STUN (optional)
+    command: serve
+#    network_mode: host
+    networks:
+      - npm-net
+
+  headscale-2:
+    image: headscale/headscale:latest
+    restart: unless-stopped
+    container_name: headscale-2
+    volumes:
+      - ./headscale/2/config:/etc/headscale
+      - ./headscale/2/data:/var/lib/headscale
+    ports:
+      - "8082:8080" # Web interface
+      - "3479:3478/udp"
+    command: serve
+#    network_mode: host
+    networks:
+      - npm-net
+
+  npmplus:
+    container_name: npmplus
+    image: docker.io/zoeyvid/npmplus:latest # or ghcr.io/zoeyvid/npmplus:latest
+    restart: unless-stopped
+#    network_mode: host
+    networks:
+      - npm-net
+
+    ports:
+      - "80:80"        # HTTP
+      - "80:80/udp"    # HTTP on UDP
+      - "81:81"        # Admin UI
+      - "443:443"      # HTTPS
+      - "443:443/udp"  # HTTPS
+
+    volumes:
+      - ./npm/data:/data
+      # - ./npm/letsencrypt:/etc/letsencrypt
+
+    environment:
+      - "TZ=America/New_York" # set timezone, required, set it to one of the values from the "TZ identifier" https://en.wikipedia.org/wiki/List_of_tz_database_time_zones#List
+      - "ACME_EMAIL=" # email address which should be used for acme
+      - "LOGROTATE=true"
+
+# This can be used to enable crowdsec, see README for a guide
+#   crowdsec:
+#     container_name: crowdsec
+#     image: docker.io/crowdsecurity/crowdsec:latest
+#     restart: unless-stopped
+# #    network_mode: host
+#     networks:
+#       - npm-net
+#     ports:
+#       - "127.0.0.1:7422:7422"
+# #      - "127.0.0.1:8080:8080"
+#     environment:
+#       - "TZ=America/New_York" # needs to be changed
+#       - "COLLECTIONS=ZoeyVid/npmplus"
+#     volumes:
+#       - ./crowdsec/conf:/etc/crowdsec
+#       - ./crowdsec/data:/var/lib/crowdsec/data
+#       - ./npm/data/nginx:/opt/npmplus/nginx:ro
+      # - ./openappsec/logs:/opt/openappsec/logs:ro # only uncomment if you also use the openappsec-agent container
+
+networks:
+  npm-net:
+    external: true
