@@ -1,12 +1,19 @@
 # Swarmsail
 
-**Swarmsail** manages many Headscale server instances in Docker for self-hosting independent tailnets without going through Tailscale Inc.
+**Swarmsail** manages many Headscale server instances in Docker for self-hosting independent tailnets.
 
 ## Quick Start
+
+### Why?
+Manage your own Tailscale infrastructure.
 
 ### Prerequisites
 - Docker & Docker Compose
 - Python 3.6+
+
+### Notes
+
+It is not possible to use Cloudflare as a reverse proxy for Headscale, so swarmsail should be setup in a way that allows direct communication from the internet.
 
 ### Setup
 
