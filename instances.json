@@ -1,0 +1,36 @@
+{
+  "headscale": {
+    "instances": [
+      {
+        "id": 1,
+        "web_port": 8081,
+        "stun_port": 3478,
+        "stun_port_udp": true
+      },
+      {
+        "id": 2,
+        "web_port": 8082,
+        "stun_port": 3479,
+        "stun_port_udp": true
+      }
+    ]
+  },
+  "npm": {
+    "enabled": true,
+    "container_name": "npmplus",
+    "image": "docker.io/zoeyvid/npmplus:latest",
+    "admin_ui_port": 81,
+    "http_port": 80,
+    "https_port": 443,
+    "timezone": "America/New_York",
+    "acme_email": ""
+  },
+  "crowdsec": {
+    "enabled": false,
+    "timezone": "America/New_York"
+  },
+  "network": {
+    "name": "npm-net",
+    "driver": "bridge"
+  }
+}

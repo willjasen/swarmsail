@@ -1,0 +1,12 @@
+# Runtime data - don't commit
+npm/data/
+headscale/*/data/
+headscale/*/config/
+
+# Local environment
+.env
+.env.local
+
+# OS files
+.DS_Store
+Thumbs.db
