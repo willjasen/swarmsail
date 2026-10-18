@@ -1,6 +1,6 @@
 services:
   headscale-1:
-    image: headscale/headscale:latest
+    image: headscale/headscale:0.29.5
     restart: unless-stopped
     container_name: headscale-1
     volumes:
@@ -15,7 +15,7 @@ services:
       - npm-net
 
   headscale-2:
-    image: headscale/headscale:latest
+    image: headscale/headscale:0.29.5
     restart: unless-stopped
     container_name: headscale-2
     volumes:

@@ -17,7 +17,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 
-DEFAULT_HEADSCALE_IMAGE = "headscale/headscale:0.27.0"
+DEFAULT_HEADSCALE_IMAGE = "headscale/headscale:0.29.5"
 TAILSCALE_POOL = ipaddress.ip_network("100.64.0.0/10")
 
 
