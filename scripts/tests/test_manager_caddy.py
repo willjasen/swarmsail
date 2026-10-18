@@ -55,6 +55,37 @@ class CaddyManagerTests(unittest.TestCase):
             self.assertNotIn("/tmp/cf-token", content)
             self.assertEqual((Path(directory) / "Caddyfile").stat().st_mode & 0o777, 0o600)
 
+    def test_caddy_routes_additional_service_on_an_explicit_external_network(self):
+        config = sample_config()
+        config["caddy"].update({
+            "external_networks": ["rawrarr-coordinator-ingress"],
+            "proxy_routes": [{"hostname": "swarmsail.example.test", "upstream": "coordinator:8080"}],
+        })
+        compose = generate_compose(config)
+        self.assertEqual(
+            compose["services"]["caddy"]["networks"],
+            ["test-net", "rawrarr-coordinator-ingress"],
+        )
+        self.assertEqual(
+            compose["networks"]["rawrarr-coordinator-ingress"],
+            {"external": True, "name": "rawrarr-coordinator-ingress"},
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            config["caddy"]["config_dir"] = directory
+            ensure_caddy_config(config, Path(directory))
+            self.assertIn(
+                "swarmsail.example.test {\n    reverse_proxy coordinator:8080",
+                (Path(directory) / "Caddyfile").read_text(),
+            )
+
+    def test_caddy_proxy_route_requires_a_scoped_external_network(self):
+        config = sample_config()
+        config["caddy"]["proxy_routes"] = [
+            {"hostname": "swarmsail.example.test", "upstream": "coordinator:8080"}
+        ]
+        with self.assertRaisesRegex(ValueError, "explicit external Docker network"):
+            generate_compose(config)
+
     def test_caddy_and_npm_cannot_both_own_ingress_ports(self):
         config = sample_config()
         config["npm"]["enabled"] = True

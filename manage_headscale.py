@@ -106,7 +106,7 @@ def generate_crowdsec_service(crowdsec_config: dict, network_name: str) -> dict:
 
 
 def generate_caddyfile(config: dict) -> str:
-    """Generate host-based HTTPS routes for managed Headscale instances."""
+    """Generate host-based HTTPS routes for Headscale and approved services."""
     routes = []
     for instance in config["headscale"]["instances"]:
         if is_adopted(instance):
@@ -116,6 +116,13 @@ def generate_caddyfile(config: dict) -> str:
         routes.extend((
             f"{parsed.hostname.lower()} {{",
             f"    reverse_proxy {upstream}:8080",
+            "}",
+            "",
+        ))
+    for route in config.get("caddy", {}).get("proxy_routes", []):
+        routes.extend((
+            f"{route['hostname'].lower()} {{",
+            f"    reverse_proxy {route['upstream']}",
             "}",
             "",
         ))
@@ -151,7 +158,7 @@ def generate_caddy_service(caddy_config: dict, network_name: str) -> dict:
         "cap_drop": ["ALL"],
         "cap_add": ["NET_BIND_SERVICE"],
         "security_opt": ["no-new-privileges:true"],
-        "networks": [network_name],
+        "networks": [network_name, *caddy_config.get("external_networks", [])],
     }
 
 
@@ -191,6 +198,9 @@ def generate_compose(config: dict) -> dict:
         networks = {network_name: {"external": True, "name": network_name}}
     else:
         networks = {network_name: {"driver": config["network"]["driver"]}}
+    if (caddy_config := config.get("caddy", {})).get("enabled"):
+        for external_network in caddy_config.get("external_networks", []):
+            networks[external_network] = {"external": True, "name": external_network}
 
     return {"services": services, "networks": networks}
 
@@ -230,6 +240,7 @@ def validate_config(config: dict):
                 "CrowdSec-protected public hosts require managed or external CrowdSec"
             )
 
+    seen_proxy_hosts = set()
     caddy = config.get("caddy", {})
     if caddy.get("enabled"):
         if npm.get("enabled"):
@@ -245,6 +256,30 @@ def validate_config(config: dict):
             port = caddy.get(field, default)
             if not isinstance(port, int) or isinstance(port, bool) or not 1 <= port <= 65535:
                 raise ValueError(f"caddy.{field} must be an integer from 1 to 65535")
+        external_networks = caddy.get("external_networks", [])
+        if not isinstance(external_networks, list) or any(
+            not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", name)
+            for name in external_networks
+        ):
+            raise ValueError("caddy.external_networks must be a list of Docker network names")
+        if len(set(external_networks)) != len(external_networks) or network["name"] in external_networks:
+            raise ValueError("caddy.external_networks must be unique and separate from the private network")
+        proxy_routes = caddy.get("proxy_routes", [])
+        if not isinstance(proxy_routes, list):
+            raise ValueError("caddy.proxy_routes must be a list")
+        for route in proxy_routes:
+            if not isinstance(route, dict) or not valid_dns_hostname(route.get("hostname")):
+                raise ValueError("each Caddy proxy route requires a valid hostname")
+            if not isinstance(route.get("upstream"), str) or not re.fullmatch(
+                r"[A-Za-z0-9][A-Za-z0-9_.:-]*(?:/[A-Za-z0-9_.~:/?&=%+-]*)?", route["upstream"]
+            ):
+                raise ValueError("each Caddy proxy route requires a safe upstream address")
+            hostname = route["hostname"].lower()
+            if hostname in seen_proxy_hosts:
+                raise ValueError(f"duplicate Caddy hostname {route['hostname']}")
+            seen_proxy_hosts.add(hostname)
+            if not external_networks:
+                raise ValueError("Caddy proxy_routes require an explicit external Docker network")
         if not any(not is_adopted(instance) for instance in instances):
             raise ValueError("Caddy requires at least one managed Headscale instance")
 
@@ -252,7 +287,6 @@ def validate_config(config: dict):
     seen_ports = set()
     seen_prefixes = []
     seen_subscriber_generations = set()
-    seen_proxy_hosts = set()
     subscriber_generations = {}
     for index, instance in enumerate(instances, start=1):
         if not isinstance(instance, dict):
