@@ -10,7 +10,18 @@ The Swarmsail HTTP service now serves a small status page at `/health`; `/health
 
 ## Deployment and verification
 
-Set `health_upstream` to `control-plane:8787` for the `swarmsail.willjasen.net` proxy route in node-local `instances.json`, then regenerate the Caddyfile with the repository manager. Rebuild/recreate the control plane from the Swarmsail Compose project and restart Caddy to load the generated route. Verify `/health` returns Swarmsail HTML, `/healthz` remains available internally, and `/` still reaches the Rawrarr coordinator. Validate TLS and the coordinator's existing health path after deployment.
+The active node-local configuration was backed up to `~/Library/Application Support/Swarmsail/backups/instances-20261018-184927-health-page.json` (mode 600), then `health_upstream` was set to `control-plane:8787` for the `swarmsail.willjasen.net` proxy route. Regenerate the runtime files with:
+
+```sh
+python3 manage_headscale.py generate \
+  --config "$HOME/Library/Application Support/Swarmsail/instances.json" \
+  --output "$HOME/Library/Application Support/Swarmsail/docker-compose.headscale.yml" \
+  --apply
+```
+
+Validate the mounted Caddyfile, rebuild only the control plane, and restart Caddy with the runtime's required Compose environment (`SWARMSAIL_LOCAL_DATA_DIR` and `SWARMSAIL_LAN_IP`). Caddy and the control plane are both on `swarmsail-local-private`; the coordinator remains reached through the existing external ingress bridge.
+
+Verification passed: all 14 script tests; Python bytecode compilation; `caddy validate`; local `/healthz` returned `{"status": "ok"}` and the rebuilt container became healthy; HTTPS `/health` returned the Swarmsail status HTML with a trusted certificate; and HTTPS `/` still returned the Rawrarr landing page. A Compose `ps` check without required interpolation variables printed warnings/errors after the Caddy restart succeeded; Docker inspection confirmed both target containers were running, and subsequent checks passed.
 
 ## Recovery
 
