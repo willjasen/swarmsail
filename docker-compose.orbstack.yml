@@ -24,6 +24,7 @@ services:
 
   npmplus:
     image: docker.io/zoeyvid/npmplus:latest
+    profiles: ["npm"]
     restart: unless-stopped
     ports:
       - "${SWARMSAIL_LAN_IP:?Set SWARMSAIL_LAN_IP to the MacBook LAN address}:80:80"

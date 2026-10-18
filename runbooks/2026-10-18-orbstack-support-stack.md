@@ -1,5 +1,7 @@
 # Local OrbStack support stack
 
+> Current ingress is Swarmsail-managed Caddy. See [the Caddy Headscale ingress runbook](2026-10-18-swarmsail-caddy-headscale-ingress.md); the NPM/native-TLS steps below describe the earlier rollout and are retained as recovery context.
+
 ## Objective and starting state
 
 Run the services Swarmsail needs on the MacBook in the `swarmsail-local` Compose project. The existing [local control plane](2026-10-18-orbstack-local-control-plane.md) was healthy on loopback with no Headscale instance. The active `do2` services are separate; this task creates fresh node-local state and does not copy their identities. Mac LAN address at the start was `192.168.128.210`. `rawrarr.willjasen.net` still resolved to the existing `100.84.23.71` tailnet host, so ordinary DNS did not yet reach the Mac LAN address.
