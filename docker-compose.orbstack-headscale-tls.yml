@@ -1,0 +1,11 @@
+# Add after docker-compose.orbstack.yml and the node-local generated Headscale Compose.
+# Activate only after the certificate and Headscale TLS config exist.
+services:
+  headscale-rawrarr-local:
+    ports:
+      - "${SWARMSAIL_LAN_IP:?Set SWARMSAIL_LAN_IP to the MacBook LAN address}:443:8080"
+    volumes:
+      - type: bind
+        source: ${SWARMSAIL_LOCAL_DATA_DIR:?Set SWARMSAIL_LOCAL_DATA_DIR to a node-local folder}/acme/certificates
+        target: /certs
+        read_only: true
