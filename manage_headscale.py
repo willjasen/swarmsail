@@ -120,12 +120,21 @@ def generate_caddyfile(config: dict) -> str:
             "",
         ))
     for route in config.get("caddy", {}).get("proxy_routes", []):
-        routes.extend((
-            f"{route['hostname'].lower()} {{",
-            f"    reverse_proxy {route['upstream']}",
-            "}",
-            "",
-        ))
+        routes.append(f"{route['hostname'].lower()} {{")
+        health_upstream = route.get("health_upstream")
+        if health_upstream:
+            routes.extend((
+                "    @swarmsail_health path /health",
+                "    handle @swarmsail_health {",
+                f"        reverse_proxy {health_upstream}",
+                "    }",
+                "    handle {",
+                f"        reverse_proxy {route['upstream']}",
+                "    }",
+            ))
+        else:
+            routes.append(f"    reverse_proxy {route['upstream']}")
+        routes.extend(("}", ""))
     return (
         "{\n    admin off\n    acme_dns cloudflare {file./run/secrets/cloudflare-dns-token}\n"
         "    tls_resolvers 8.8.8.8 9.9.9.9\n}\n\n" + "\n".join(routes)
@@ -274,6 +283,13 @@ def validate_config(config: dict):
                 r"[A-Za-z0-9][A-Za-z0-9_.:-]*(?:/[A-Za-z0-9_.~:/?&=%+-]*)?", route["upstream"]
             ):
                 raise ValueError("each Caddy proxy route requires a safe upstream address")
+            if "health_upstream" in route and (
+                not isinstance(route["health_upstream"], str) or not re.fullmatch(
+                    r"[A-Za-z0-9][A-Za-z0-9_.:-]*(?:/[A-Za-z0-9_.~:/?&=%+-]*)?",
+                    route["health_upstream"],
+                )
+            ):
+                raise ValueError("Caddy health_upstream must be a safe upstream address")
             hostname = route["hostname"].lower()
             if hostname in seen_proxy_hosts:
                 raise ValueError(f"duplicate Caddy hostname {route['hostname']}")

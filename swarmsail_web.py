@@ -874,6 +874,9 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_html(DASHBOARD)
         if path == "/crowdsec":
             return self.send_html(CROWDSEC_PAGE)
+        if path == "/health":
+            checked_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+            return self.send_html(HEALTH_PAGE.replace("__CHECKED_AT__", checked_at))
         if path == "/public-enroll":
             try:
                 status = self.server.public_enrollment()
@@ -1128,6 +1131,15 @@ async function load(){if(loading||document.hidden)return;loading=true;try{let re
 function watchChanges(){let values=new Map([...document.querySelectorAll('[data-live-value]')].map(node=>[node,node.textContent]));let observer=new MutationObserver(records=>{for(let record of records){let node=record.target.nodeType===3?record.target.parentElement:record.target,target=node&&node.closest('[data-live-value]');if(!target)continue;let next=target.textContent,previous=values.get(target);values.set(target,next);if(previous===undefined||previous===next)continue;target.classList.remove('data-changed');void target.offsetWidth;target.classList.add('data-changed');setTimeout(()=>target.classList.remove('data-changed'),2300)}});document.querySelectorAll('[data-live-value]').forEach(node=>observer.observe(node,{subtree:true,childList:true,characterData:true}))}
 const theme=document.getElementById('theme'),error=document.getElementById('error'),status=document.getElementById('status'),appsecBlocked=document.getElementById('appsec-blocked'),appsecProcessed=document.getElementById('appsec-processed'),bouncerDropped=document.getElementById('bouncer-dropped'),decisionCount=document.getElementById('decision-count'),service=document.getElementById('service'),logs=document.getElementById('logs'),acquisition=document.getElementById('acquisition'),alerts=document.getElementById('alerts'),issues=document.getElementById('issues'),decisions=document.getElementById('decisions');themeLabel();load().then(watchChanges);setInterval(load,15000);window.addEventListener('focus',load);document.addEventListener('visibilitychange',load);
 </script></body></html>"""
+
+
+HEALTH_PAGE = r"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#101714"><meta http-equiv="refresh" content="30">
+<title>Swarmsail · Service status</title><style>
+:root{color-scheme:dark;--bg:#101714;--panel:#18211c;--line:#2d3a32;--text:#eef5ef;--muted:#a2b0a6;--green:#a8ed72;--green-bg:#1d3926;font:16px Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;background:var(--bg);color:var(--text)}
+*{box-sizing:border-box}body{min-height:100vh;margin:0;display:grid;place-items:center;padding:24px}.page{width:min(100%,680px)}.brand{display:flex;align-items:center;gap:12px;margin-bottom:24px;font-weight:700;letter-spacing:.02em}.mark{width:38px;height:38px;display:grid;place-items:center;border-radius:12px;background:var(--green-bg);color:var(--green);font-size:22px}.card{border:1px solid var(--line);border-radius:18px;background:var(--panel);padding:clamp(24px,6vw,42px);box-shadow:0 24px 80px #0004}h1{font-size:clamp(28px,6vw,38px);letter-spacing:-.035em;margin:0 0 12px}.intro{color:var(--muted);line-height:1.6;margin:0 0 30px}.status{display:flex;align-items:center;gap:12px;border:1px solid #31543a;border-radius:12px;background:#17281d;padding:16px}.dot{width:11px;height:11px;border-radius:50%;background:var(--green);box-shadow:0 0 0 5px #a8ed721c}.status strong{display:block;font-size:16px}.status small{display:block;color:#b7c6ba;margin-top:3px}.meta{border-top:1px solid var(--line);margin-top:28px;padding-top:18px;color:var(--muted);font-size:13px;display:flex;justify-content:space-between;gap:12px}.footer{color:var(--muted);font-size:12px;margin:18px 4px}
+</style></head><body><main class="page"><div class="brand"><span class="mark" aria-hidden="true">↗</span><span>Swarmsail</span></div><section class="card" aria-labelledby="title"><h1 id="title">Service status</h1><p class="intro">Swarmsail’s control plane is responding and ready to coordinate managed tailnets.</p><div class="status" role="status"><span class="dot" aria-hidden="true"></span><div><strong>Operational</strong><small>Control plane is healthy</small></div></div><div class="meta"><span>Last checked</span><time>__CHECKED_AT__</time></div></section><p class="footer">This status page refreshes automatically every 30 seconds.</p></main></body></html>"""
 
 
 DASHBOARD = r"""<!doctype html>

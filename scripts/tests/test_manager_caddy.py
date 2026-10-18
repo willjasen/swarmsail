@@ -59,7 +59,11 @@ class CaddyManagerTests(unittest.TestCase):
         config = sample_config()
         config["caddy"].update({
             "external_networks": ["rawrarr-coordinator-ingress"],
-            "proxy_routes": [{"hostname": "swarmsail.example.test", "upstream": "coordinator:8080"}],
+            "proxy_routes": [{
+                "hostname": "swarmsail.example.test",
+                "upstream": "coordinator:8080",
+                "health_upstream": "control-plane:8787",
+            }],
         })
         compose = generate_compose(config)
         self.assertEqual(
@@ -74,9 +78,22 @@ class CaddyManagerTests(unittest.TestCase):
             config["caddy"]["config_dir"] = directory
             ensure_caddy_config(config, Path(directory))
             self.assertIn(
-                "swarmsail.example.test {\n    reverse_proxy coordinator:8080",
+                "swarmsail.example.test {\n    @swarmsail_health path /health\n    handle @swarmsail_health {\n        reverse_proxy control-plane:8787\n    }\n    handle {\n        reverse_proxy coordinator:8080",
                 (Path(directory) / "Caddyfile").read_text(),
             )
+
+    def test_caddy_rejects_invalid_health_upstream(self):
+        config = sample_config()
+        config["caddy"].update({
+            "external_networks": ["rawrarr-coordinator-ingress"],
+            "proxy_routes": [{
+                "hostname": "swarmsail.example.test",
+                "upstream": "coordinator:8080",
+                "health_upstream": "bad upstream",
+            }],
+        })
+        with self.assertRaisesRegex(ValueError, "health_upstream"):
+            generate_compose(config)
 
     def test_caddy_proxy_route_requires_a_scoped_external_network(self):
         config = sample_config()
