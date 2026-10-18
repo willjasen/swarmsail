@@ -21,7 +21,7 @@ The Headscale listener is initially internal to the private Docker network while
 
 ## HTTPS plan
 
-Issue a certificate for `rawrarr.willjasen.net` with ACME DNS-01 through Cloudflare, using a node-local token file with Zone Read and DNS Edit for `willjasen.net`. `bash scripts/issue_lan_certificate.sh` previews; `bash scripts/issue_lan_certificate.sh --apply` obtains or renews it with an ephemeral lego container. Do not add a cloudflared container. DNS-01 does not require a public inbound connection to the Mac.
+Issue a certificate for `rawrarr.willjasen.net` with ACME DNS-01 through Cloudflare, using a node-local token file with Zone Read and DNS Edit for `willjasen.net`. `bash scripts/issue_lan_certificate.sh` previews; `bash scripts/issue_lan_certificate.sh --apply` obtains or renews it with an ephemeral lego container and uses public recursive resolvers because the OrbStack DNS resolver timed out. After renewal, recreate Headscale with the TLS Compose command below so it reloads the certificate. Do not add a cloudflared container. DNS-01 does not require a public inbound connection to the Mac.
 
 Once the certificate is issued, add the following lines to the node-local `headscale/local/config/config.yaml` and use the TLS Compose override:
 
@@ -40,7 +40,7 @@ NPM's LAN HTTPS listener was moved to 8443, freeing port 443 for Headscale. A DN
 
 ## Verification and rollback
 
-Verified four running containers: `swarmsail-local-control-plane-1` healthy, `headscale-rawrarr-local` running, `swarmsail-local-npmplus-1` responding on admin 8181 and LAN 8443, and `swarmsail-local-crowdsec-1` running. Headscale CLI `users list` and `nodes list` succeeded, and NPM reached Headscale `/health` over the private Docker network with HTTP 200. The dashboard `/healthz` returned `{"status":"ok"}` and `/api/state` listed the new managed instance. LAN port 443 was free after moving NPM. Before that move, a Rawrarr container reached NPM on the Mac LAN address, which proves the Docker-to-LAN path but does not yet verify the final Headscale endpoint.
+Verified four running containers: `swarmsail-local-control-plane-1` healthy, `headscale-rawrarr-local` running, `swarmsail-local-npmplus-1` responding on admin 8181 and LAN 8443, and `swarmsail-local-crowdsec-1` running. Headscale CLI `users list` succeeded; Headscale config validation completed. The dashboard `/healthz` returned `{"status":"ok"}` and `/api/state` listed the new managed instance. The Let's Encrypt certificate has SAN `rawrarr.willjasen.net`, expires 2027-01-16, and its private key is mode 600. Headscale now publishes `192.168.128.210:443` with native TLS. `curl --resolve rawrarr.willjasen.net:443:192.168.128.210 https://rawrarr.willjasen.net/health` returned HTTP 200 with trusted certificate verification from the host and from `rawrarr-local-roarlay-1`. Ordinary public DNS still resolved to `100.84.23.71` during verification; the requested Cloudflare DNS-only A record to `192.168.128.210` remains for the operator to set.
 
 After HTTPS activation, verify the certificate name and trust with `curl --resolve rawrarr.willjasen.net:443:<LAN_IP> https://rawrarr.willjasen.net/health` and then test ordinary DNS resolution. A service listening internally is not proof of LAN HTTPS.
 
@@ -48,4 +48,4 @@ To stop this new local stack, stop only the named services with `docker compose 
 
 ## Remaining work
 
-The Cloudflare token file was later added but contained two lines. Lego rejected it as an invalid Authorization header before zone lookup; no certificate was issued. The certificate script now accepts one token line with an optional final newline and rejects multiple lines without showing their contents. Replace the file with only the API token, mode 600, then rerun the issuance command. Native Headscale TLS, LAN 443 publishing, DNS change, and a final Rawrarr-to-Headscale HTTPS test remain. Subscriber eligibility-to-deployment automation and cross-tailnet routing are separate implementation work.
+The Cloudflare token file was later corrected to one token line and mode 600. The initial ACME propagation attempt failed because the OrbStack recursive resolver timed out; using explicit public resolvers succeeded. Native Headscale TLS and the Rawrarr container HTTPS route are now verified. Update the Cloudflare DNS-only A record to `192.168.128.210` and verify propagation before relying on ordinary hostname resolution. Subscriber eligibility-to-deployment automation and cross-tailnet routing are separate implementation work.

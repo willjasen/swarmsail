@@ -58,6 +58,7 @@ docker run --rm \
   -e CF_DNS_API_TOKEN_FILE=/run/secrets/cloudflare-dns-token \
   goacme/lego:v5.5.2 \
   run --path /acme --server letsencrypt --dns cloudflare \
+  --dns.resolvers 8.8.8.8:53 --dns.resolvers 9.9.9.9:53 \
   --domains "$domain" --accept-tos
 cert="$acme_dir/certificates/$domain.crt"
 key="$acme_dir/certificates/$domain.key"
