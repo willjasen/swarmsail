@@ -1,0 +1,21 @@
+services:
+  control-plane:
+    build:
+      context: .
+      dockerfile: Dockerfile.orbstack
+    image: swarmsail:local
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8787:8787"
+    volumes:
+      - type: bind
+        source: ${SWARMSAIL_LOCAL_DATA_DIR:?Set SWARMSAIL_LOCAL_DATA_DIR to a node-local folder}
+        target: /data
+    read_only: true
+    tmpfs:
+      - /tmp
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8787/healthz', timeout=3).read()"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
