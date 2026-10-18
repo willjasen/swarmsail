@@ -48,4 +48,4 @@ To stop this new local stack, stop only the named services with `docker compose 
 
 ## Remaining work
 
-The Cloudflare token file was still absent at this milestone, so certificate issuance, native Headscale TLS, LAN 443 publishing, DNS change, and a final Rawrarr-to-Headscale HTTPS test remain. Subscriber eligibility-to-deployment automation and cross-tailnet routing are separate implementation work.
+The Cloudflare token file was later added but contained two lines. Lego rejected it as an invalid Authorization header before zone lookup; no certificate was issued. The certificate script now accepts one token line with an optional final newline and rejects multiple lines without showing their contents. Replace the file with only the API token, mode 600, then rerun the issuance command. Native Headscale TLS, LAN 443 publishing, DNS change, and a final Rawrarr-to-Headscale HTTPS test remain. Subscriber eligibility-to-deployment automation and cross-tailnet routing are separate implementation work.

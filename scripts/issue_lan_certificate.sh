@@ -38,14 +38,27 @@ if [[ "$(stat -f %Lp "$token_file")" != 600 ]]; then
 fi
 command -v docker >/dev/null || { printf 'docker is required.\n' >&2; exit 1; }
 install -d -m 700 "$acme_dir"
+temporary_token="$(mktemp "$acme_dir/.cloudflare-token.XXXXXX")"
+chmod 600 "$temporary_token"
+trap 'rm -f "$temporary_token"' EXIT
+python3 - "$token_file" "$temporary_token" <<'PY'
+from pathlib import Path
+import sys
+
+raw = Path(sys.argv[1]).read_bytes()
+value = raw.rstrip(b"\r\n")
+if not value or b"\n" in value or b"\r" in value or any(c in value for c in b" \t"):
+    raise SystemExit("Cloudflare token file must contain only one token on one line.")
+Path(sys.argv[2]).write_bytes(value)
+PY
 docker run --rm \
   --user "$(id -u):$(id -g)" \
   --mount "type=bind,src=$acme_dir,dst=/acme" \
-  --mount "type=bind,src=$token_file,dst=/run/secrets/cloudflare-dns-token,readonly" \
+  --mount "type=bind,src=$temporary_token,dst=/run/secrets/cloudflare-dns-token,readonly" \
   -e CF_DNS_API_TOKEN_FILE=/run/secrets/cloudflare-dns-token \
   goacme/lego:v5.5.2 \
-  --path /acme --server letsencrypt --dns cloudflare \
-  --domains "$domain" --accept-tos run
+  run --path /acme --server letsencrypt --dns cloudflare \
+  --domains "$domain" --accept-tos
 cert="$acme_dir/certificates/$domain.crt"
 key="$acme_dir/certificates/$domain.key"
 [[ -s "$cert" && -s "$key" ]] || { printf 'Certificate or key missing after lego run.\n' >&2; exit 1; }
