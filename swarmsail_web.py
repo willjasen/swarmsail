@@ -11,6 +11,7 @@ import subprocess
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -37,6 +38,13 @@ def nested_total(value):
     return value if isinstance(value, (int, float)) and not isinstance(value, bool) else 0
 
 
+def public_instance(instance):
+    """Expose display settings, never operator paths or subscriber account IDs."""
+    fields = ("id", "server_url", "ipv4_prefix", "base_domain",
+              "management_mode", "security_path", "display_name")
+    return {field: instance[field] for field in fields if field in instance}
+
+
 SCHEMA = """
 PRAGMA foreign_keys = ON;
 CREATE TABLE IF NOT EXISTS organizations (
@@ -51,6 +59,30 @@ BEFORE UPDATE OF mode ON organizations
 WHEN OLD.mode = 'collaborative' AND NEW.mode = 'isolated'
 BEGIN
     SELECT RAISE(ABORT, 'a shared organization cannot become isolated');
+END;
+CREATE TABLE IF NOT EXISTS subscriber_tailnets (
+    id INTEGER PRIMARY KEY,
+    account_id TEXT NOT NULL,
+    generation INTEGER NOT NULL CHECK(generation >= 1),
+    organization_id INTEGER NOT NULL UNIQUE REFERENCES organizations(id) ON DELETE RESTRICT,
+    headscale_instance TEXT NOT NULL UNIQUE,
+    active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0, 1)),
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(account_id, generation)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS one_active_subscriber_tailnet
+ON subscriber_tailnets(account_id) WHERE active = 1;
+CREATE TRIGGER IF NOT EXISTS subscriber_tailnet_identity_immutable
+BEFORE UPDATE OF account_id, generation, organization_id, headscale_instance
+ON subscriber_tailnets
+BEGIN
+    SELECT RAISE(ABORT, 'subscriber tailnet identity cannot be changed');
+END;
+CREATE TRIGGER IF NOT EXISTS subscriber_organization_instance_immutable
+BEFORE UPDATE OF headscale_instance ON organizations
+WHEN EXISTS(SELECT 1 FROM subscriber_tailnets WHERE organization_id = OLD.id)
+BEGIN
+    SELECT RAISE(ABORT, 'subscriber organization instance cannot be changed');
 END;
 CREATE TABLE IF NOT EXISTS devices (
     id INTEGER PRIMARY KEY,
@@ -166,7 +198,7 @@ class Store:
             "connections": connections,
             "shares": shares,
             "acl_rules": acl_rules,
-            "headscale_instances": instances,
+            "headscale_instances": [public_instance(item) for item in instances],
             "sharing_note": (
                 "Planned shares describe desired policy. Only collaborative organizations "
                 "can participate; a future Headscale adapter must apply them."
@@ -212,7 +244,7 @@ class Store:
         ]
         return {
             "organization": organization,
-            "tailnet": instance,
+            "tailnet": public_instance(instance) if instance else None,
             "devices": devices,
             "connections": connections,
             "shares": shares,
@@ -313,6 +345,75 @@ class Store:
                     (organization_id,),
                 )
             return self._one(db, "SELECT * FROM organizations WHERE id=?", organization_id)
+
+    def link_subscriber_tailnet(self, account_id, instance_id, instances):
+        """Bind a configured generation, preserving shared predecessors."""
+        try:
+            account_id = str(uuid.UUID(str(account_id)))
+        except (ValueError, TypeError, AttributeError) as exc:
+            raise InputError("account_id must be a UUID") from exc
+        instance_id = str(instance_id).strip()
+        instance = next(
+            (item for item in instances if str(item.get("id")) == instance_id), None
+        )
+        if not instance or instance.get("management_mode", "managed") != "managed":
+            raise InputError("account requires a configured managed Headscale instance")
+        if str(instance.get("subscriber_account_id", "")) != account_id:
+            raise InputError("Headscale instance is assigned to another account", HTTPStatus.CONFLICT)
+        generation = instance.get("subscriber_generation", 1)
+        if not isinstance(generation, int) or isinstance(generation, bool) or generation < 1:
+            raise InputError("subscriber generation must be a positive integer")
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            existing = db.execute(
+                "SELECT * FROM subscriber_tailnets WHERE headscale_instance=?", (instance_id,)
+            ).fetchone()
+            if existing:
+                if existing["account_id"] != account_id or existing["generation"] != generation:
+                    raise InputError("Headscale instance is already assigned", HTTPStatus.CONFLICT)
+                return dict(existing)
+            active = db.execute(
+                """SELECT st.*, o.mode FROM subscriber_tailnets st
+                   JOIN organizations o ON o.id=st.organization_id
+                   WHERE st.account_id=? AND st.active=1""",
+                (account_id,),
+            ).fetchone()
+            if active:
+                if active["mode"] != "collaborative" or generation != active["generation"] + 1:
+                    raise InputError(
+                        "a new private tailnet requires a shared predecessor and next generation",
+                        HTTPStatus.CONFLICT,
+                    )
+            elif generation != 1:
+                raise InputError("first subscriber tailnet must be generation 1")
+            organization = db.execute(
+                "SELECT id, mode FROM organizations WHERE headscale_instance=?",
+                (instance_id,),
+            ).fetchone()
+            if organization:
+                in_use = db.execute(
+                    "SELECT 1 FROM devices WHERE organization_id=?",
+                    (organization["id"],),
+                ).fetchone()
+                if organization["mode"] != "isolated" or in_use:
+                    raise InputError("Headscale instance is already in use", HTTPStatus.CONFLICT)
+                organization_id = organization["id"]
+            else:
+                name = f"rawrarr-tailnet-{instance_id}"
+                cursor = db.execute(
+                    "INSERT INTO organizations(name, mode, headscale_instance) VALUES (?, 'isolated', ?)",
+                    (name, instance_id),
+                )
+                organization_id = cursor.lastrowid
+            if active:
+                db.execute("UPDATE subscriber_tailnets SET active=0 WHERE id=?", (active["id"],))
+            cursor = db.execute(
+                """INSERT INTO subscriber_tailnets
+                   (account_id, generation, organization_id, headscale_instance)
+                   VALUES (?, ?, ?, ?)""",
+                (account_id, generation, organization_id, instance_id),
+            )
+            return self._one(db, "SELECT * FROM subscriber_tailnets WHERE id=?", cursor.lastrowid)
 
     def create_device(self, data):
         organization_id = required_id(data, "organization_id")
@@ -495,7 +596,13 @@ class AppServer(ThreadingHTTPServer):
         self.allow_generation = allow_generation
         self.node_inventory = Path(node_inventory) if node_inventory else None
         self.inventory_cache = []
-        self.store.sync_instances(self.instances())
+        instances = self.instances()
+        self.store.sync_instances(instances)
+        for instance in instances:
+            if instance.get("subscriber_account_id"):
+                self.store.link_subscriber_tailnet(
+                    instance["subscriber_account_id"], instance["id"], instances
+                )
         self.refresh_inventory()
 
     def instances(self):
