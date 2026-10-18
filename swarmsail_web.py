@@ -46,6 +46,12 @@ CREATE TABLE IF NOT EXISTS organizations (
     headscale_instance TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+CREATE TRIGGER IF NOT EXISTS organization_no_private_reversion
+BEFORE UPDATE OF mode ON organizations
+WHEN OLD.mode = 'collaborative' AND NEW.mode = 'isolated'
+BEGIN
+    SELECT RAISE(ABORT, 'a shared organization cannot become isolated');
+END;
 CREATE TABLE IF NOT EXISTS devices (
     id INTEGER PRIMARY KEY,
     organization_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
@@ -292,6 +298,21 @@ class Store:
                 (name, mode, instance),
             )
             return self._one(db, "SELECT * FROM organizations WHERE id=?", cursor.lastrowid)
+
+    def enable_sharing(self, organization_id):
+        """Permanently mark an existing isolated tailnet as eligible for planned shares."""
+        with self.connect() as db:
+            row = db.execute(
+                "SELECT * FROM organizations WHERE id=?", (organization_id,)
+            ).fetchone()
+            if row is None:
+                raise InputError("organization does not exist", HTTPStatus.NOT_FOUND)
+            if row["mode"] == "isolated":
+                db.execute(
+                    "UPDATE organizations SET mode='collaborative' WHERE id=?",
+                    (organization_id,),
+                )
+            return self._one(db, "SELECT * FROM organizations WHERE id=?", organization_id)
 
     def create_device(self, data):
         organization_id = required_id(data, "organization_id")
