@@ -34,6 +34,51 @@ def sample_config():
 
 
 class CaddyManagerTests(unittest.TestCase):
+    def test_droplet_requires_global_ipv4_and_binds_caddy_to_it(self):
+        config = sample_config()
+        config["deployment"] = {"role": "droplet", "public_ipv4": "8.8.8.8"}
+        config["caddy"]["listen_ip"] = "8.8.8.8"
+
+        compose = generate_compose(config)
+        self.assertIn("8.8.8.8:80:80", compose["services"]["caddy"]["ports"])
+        self.assertIn("8.8.8.8:443:443", compose["services"]["caddy"]["ports"])
+
+    def test_droplet_rejects_non_global_ipv4(self):
+        for address in ("192.168.1.10", "100.64.0.1", "203.0.113.10"):
+            with self.subTest(address=address):
+                config = sample_config()
+                config["deployment"] = {"role": "droplet", "public_ipv4": address}
+                with self.assertRaisesRegex(ValueError, "globally routable IPv4"):
+                    generate_compose(config)
+
+    def test_droplet_rejects_ipv6_address(self):
+        config = sample_config()
+        config["deployment"] = {"role": "droplet", "public_ipv4": "2001:db8::1"}
+
+        with self.assertRaisesRegex(ValueError, "requires a valid public IPv4"):
+            generate_compose(config)
+
+    def test_droplet_requires_canonical_string_ipv4(self):
+        config = sample_config()
+        config["deployment"] = {"role": "droplet", "public_ipv4": 134744072}
+
+        with self.assertRaisesRegex(ValueError, "requires a valid public IPv4"):
+            generate_compose(config)
+
+    def test_droplet_caddy_must_bind_to_its_public_ipv4(self):
+        config = sample_config()
+        config["deployment"] = {"role": "droplet", "public_ipv4": "8.8.8.8"}
+
+        with self.assertRaisesRegex(ValueError, "must bind to deployment.public_ipv4"):
+            generate_compose(config)
+
+    def test_droplet_requires_public_ipv4(self):
+        config = sample_config()
+        config["deployment"] = {"role": "droplet"}
+
+        with self.assertRaisesRegex(ValueError, "requires a valid public IPv4"):
+            generate_compose(config)
+
     def test_caddy_routes_hostname_to_private_headscale_service(self):
         compose = generate_compose(sample_config())
         caddy = compose["services"]["caddy"]
