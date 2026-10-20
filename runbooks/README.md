@@ -1,6 +1,7 @@
 # Swarmsail runbooks
 
 - [Analyze disk space](analyze-disk-space.md) — Inspect storage usage and cleanup candidates.
+- [Full-stack integration test](test-full-stack.md) — Deploy a disposable Swarmsail, Headscale, Caddy, and CrowdSec stack and verify bidirectional connectivity between two Tailscale containers.
 - [Local OrbStack control plane](2026-10-18-orbstack-local-control-plane.md) — Run Swarmsail locally on loopback with node-local state.
 - [Local OrbStack support stack](2026-10-18-orbstack-support-stack.md) — Deploy local Headscale, NPM Plus, and CrowdSec; finish LAN HTTPS after DNS-01 issuance.
 - [Headscale URL access](2026-10-18-headscale-url-access.md) — Diagnose and correct Cloudflare DNS for the Mac LAN endpoint, then account for resolver cache and LAN-only routing.
