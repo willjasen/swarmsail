@@ -11,6 +11,7 @@
 - [Latest Headscale client cutover](2026-10-18-latest-headscale-client-cutover.md) — Upgrade local Headscale through the required stable versions, preserve existing Docker Tailscale identities, and connect clients without Tailscale Serve.
 - [Swarmsail health page](2026-10-18-swarmsail-health-page.md) — Serve a Swarmsail status page at `/health` while preserving the Rawrarr coordinator route.
 - [Current do2 setup](do2-current-setup.md) — Describe the existing deployment and its service boundaries.
+- [Crew administration](manage-crews-and-mateys.md) — Create mateys, enroll devices, and safely revoke users or devices within a Crew.
 - [Droplet public IPv4](droplet-public-ipv4.md) — Configure and validate the public IPv4 required for a future droplet node.
 - [Tailnet sharing transition](2026-10-18-tailnet-sharing-transition.md) — Record the irreversible isolated-to-shared model.
 - [Subscriber tailnet provisioning](2026-10-18-subscriber-tailnet-provisioning.md) — Reserve account-bound managed instances and document remaining deployment work.
