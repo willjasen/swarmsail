@@ -5,7 +5,8 @@
 - [Local OrbStack support stack](2026-10-18-orbstack-support-stack.md) — Deploy local Headscale, NPM Plus, and CrowdSec; finish LAN HTTPS after DNS-01 issuance.
 - [Rawrarr Headscale URL access](2026-10-18-rawrarr-headscale-access.md) — Diagnose and correct Cloudflare DNS for the Mac LAN endpoint, then account for resolver cache and LAN-only routing.
 - [Link the existing Rawrarr account to a tailnet](2026-10-18-link-existing-rawrarr-user-tailnet.md) — Link the passkey-backed account to the empty local Headscale instance as its first isolated tailnet.
-- [Swarmsail Caddy Headscale ingress](2026-10-18-swarmsail-caddy-headscale-ingress.md) — Generate and deploy Caddy as Swarmsail-managed HTTPS ingress for private Headscale listeners.
+- [Swarmsail Caddy Headscale ingress](2026-10-18-swarmsail-caddy-headscale-ingress.md) — Generate and deploy Caddy with optional CrowdSec blocking and access-log acquisition.
+- [CrowdSec and Caddy OrbStack test](crowdsec-caddy-orbstack-test.md) — Deploy an isolated local stack and verify Caddy blocking plus CrowdSec log parsing.
 - [Latest Headscale and Rawrarr client cutover](2026-10-18-latest-headscale-rawrarr-clients.md) — Upgrade local Headscale through the required stable versions, preserve existing Docker Tailscale identities, and connect Rawrarr clients without Tailscale Serve.
 - [Swarmsail health page](2026-10-18-swarmsail-health-page.md) — Serve a Swarmsail status page at `/health` while preserving the Rawrarr coordinator route.
 - [Current do2 setup](do2-current-setup.md) — Describe the existing deployment and its service boundaries.

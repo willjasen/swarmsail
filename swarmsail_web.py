@@ -764,12 +764,16 @@ class AppServer(ThreadingHTTPServer):
     def security_status(self):
         config = load_config(str(self.config_path))
         crowdsec = config.get("crowdsec", {})
+        if config.get("caddy", {}).get("enabled"):
+            http_path = "Caddy → CrowdSec bouncer → Headscale"
+        else:
+            http_path = "NPM Plus → CrowdSec bouncer + AppSec → Headscale"
         return {
             "crowdsec_required": bool(crowdsec.get("required_for_public_hosts")),
             "crowdsec_management": (
                 "external" if crowdsec.get("externally_managed") else "swarmsail"
             ),
-            "http_path": "NPM Plus → CrowdSec bouncer + AppSec → Headscale",
+            "http_path": http_path,
             "stun_note": "STUN uses direct UDP and is not HTTP/AppSec traffic.",
         }
 

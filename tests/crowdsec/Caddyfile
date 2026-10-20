@@ -1,0 +1,23 @@
+{
+	admin off
+	log {
+		level ERROR
+	}
+	crowdsec {
+		api_url http://crowdsec:8080
+		api_key {$CROWDSEC_API_KEY}
+		ticker_interval 2s
+		enable_hard_fails
+	}
+}
+
+headscale.test {
+	tls internal
+	route {
+		crowdsec
+		reverse_proxy headscale-test:8080
+	}
+	log {
+		output file /var/log/caddy/access.log
+	}
+}
