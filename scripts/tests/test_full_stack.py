@@ -111,10 +111,15 @@ class FullStackTests(unittest.TestCase):
         config = {
             "headscale": {"instances": [instance]},
             "npm": {"enabled": False},
-            "crowdsec": {"enabled": True, "timezone": "UTC"},
+            "crowdsec": {
+                "enabled": True,
+                "timezone": "UTC",
+                "bouncer_api_key_path": str(directory / "unused-bouncer-key"),
+            },
             "caddy": {
                 "enabled": True, "listen_ip": "127.0.0.1",
                 "config_dir": str(directory / "caddy"),
+                "log_dir": str(directory / "caddy-logs"),
                 "data_dir": "caddy-data", "state_dir": "caddy-state",
                 # Generation requires this path; local TLS does not use a token.
                 "cloudflare_token_path": str(directory / "unused-token"),
@@ -134,6 +139,10 @@ class FullStackTests(unittest.TestCase):
             "headscale.test {\n",
             "headscale.test {\n    tls internal\n"
             "    log {\n        output file /logs/access.log\n        format json\n    }\n",
+        )
+        routes = routes.replace("        crowdsec\n", "")
+        routes = routes.replace(
+            "/var/log/caddy/access.log", "/logs/access.log"
         )
         caddyfile.write_text(
             "{\n    admin off\n}\n\n" + routes
@@ -162,6 +171,8 @@ class FullStackTests(unittest.TestCase):
             f"{caddyfile}:/etc/caddy/Caddyfile:ro",
             "caddy-data:/data", "caddy-state:/config", "caddy-logs:/logs",
         ]
+        caddy.pop("secrets", None)
+        stack.pop("secrets", None)
         caddy["networks"] = {
             name: {"aliases": ["headscale.test", "swarmsail.test"]}
             for name in ("backend", "client-a", "client-b")
