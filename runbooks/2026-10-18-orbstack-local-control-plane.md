@@ -2,7 +2,7 @@
 
 ## Purpose and initial state
 
-Make the Swarmsail control plane visible in the local OrbStack project list. On 2026-10-18, Docker context `orbstack` had the `rawrarr-local` project but no Swarmsail project or containers, and local port 8787 was free. The existing Swarmsail/Headscale services on `do2` are separate. The repository root `docker-compose.yml` is a development example with host ports 80 and 443 and was not used.
+Make the Swarmsail control plane visible in the local OrbStack project list. On 2026-10-18, Docker context `orbstack` had an unrelated project but no Swarmsail project or containers, and local port 8787 was free. The existing Swarmsail/Headscale services on `do2` are separate. The repository root `docker-compose.yml` is a development example with host ports 80 and 443 and was not used.
 
 ## Local layout and deployment
 
@@ -39,4 +39,4 @@ To stop only this local control plane, run `docker compose -p swarmsail-local -f
 
 ## Remaining work
 
-The local container is a control plane, not a provisioned tailnet. Verified Rawrarr account eligibility, Headscale instance generation and deployment, HTTPS ingress, enrollment, and cross-tailnet device sharing are not yet wired to this Compose project.
+The local container is a control plane, not a provisioned tailnet. Verified account eligibility, Headscale instance generation and deployment, HTTPS ingress, enrollment, and cross-tailnet device sharing are not yet wired to this Compose project.
