@@ -70,8 +70,6 @@ CREATE TABLE IF NOT EXISTS subscriber_tailnets (
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(account_id, generation)
 );
-CREATE UNIQUE INDEX IF NOT EXISTS one_active_subscriber_tailnet
-ON subscriber_tailnets(account_id) WHERE active = 1;
 CREATE TRIGGER IF NOT EXISTS subscriber_tailnet_identity_immutable
 BEFORE UPDATE OF account_id, generation, organization_id, headscale_instance
 ON subscriber_tailnets
@@ -136,6 +134,9 @@ class Store:
         self.path = str(path)
         with self.connect() as db:
             db.executescript(SCHEMA)
+            # Earlier builds allowed only one active tailnet per account.
+            # Keep existing rows intact while allowing independent tailnets.
+            db.execute("DROP INDEX IF EXISTS one_active_subscriber_tailnet")
             columns = {row[1] for row in db.execute("PRAGMA table_info(devices)")}
             migrations = {
                 "source": "TEXT NOT NULL DEFAULT 'manual'",
@@ -347,7 +348,7 @@ class Store:
             return self._one(db, "SELECT * FROM organizations WHERE id=?", organization_id)
 
     def link_subscriber_tailnet(self, account_id, instance_id, instances):
-        """Bind a configured generation, preserving shared predecessors."""
+        """Bind one configured isolated tailnet without deactivating its siblings."""
         try:
             account_id = str(uuid.UUID(str(account_id)))
         except (ValueError, TypeError, AttributeError) as exc:
@@ -372,20 +373,12 @@ class Store:
                 if existing["account_id"] != account_id or existing["generation"] != generation:
                     raise InputError("Headscale instance is already assigned", HTTPStatus.CONFLICT)
                 return dict(existing)
-            active = db.execute(
-                """SELECT st.*, o.mode FROM subscriber_tailnets st
-                   JOIN organizations o ON o.id=st.organization_id
-                   WHERE st.account_id=? AND st.active=1""",
-                (account_id,),
+            generation_owner = db.execute(
+                "SELECT headscale_instance FROM subscriber_tailnets WHERE account_id=? AND generation=?",
+                (account_id, generation),
             ).fetchone()
-            if active:
-                if active["mode"] != "collaborative" or generation != active["generation"] + 1:
-                    raise InputError(
-                        "a new private tailnet requires a shared predecessor and next generation",
-                        HTTPStatus.CONFLICT,
-                    )
-            elif generation != 1:
-                raise InputError("first subscriber tailnet must be generation 1")
+            if generation_owner:
+                raise InputError("subscriber generation is already assigned", HTTPStatus.CONFLICT)
             organization = db.execute(
                 "SELECT id, mode FROM organizations WHERE headscale_instance=?",
                 (instance_id,),
@@ -405,8 +398,6 @@ class Store:
                     (name, instance_id),
                 )
                 organization_id = cursor.lastrowid
-            if active:
-                db.execute("UPDATE subscriber_tailnets SET active=0 WHERE id=?", (active["id"],))
             cursor = db.execute(
                 """INSERT INTO subscriber_tailnets
                    (account_id, generation, organization_id, headscale_instance)

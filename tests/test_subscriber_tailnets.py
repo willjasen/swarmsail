@@ -46,22 +46,36 @@ class SubscriberTailnetTests(unittest.TestCase):
         state = self.store.organization_state(linked["organization_id"], INSTANCES)
         self.assertEqual(state["organization"]["mode"], "collaborative")
 
-    def test_new_private_generation_preserves_shared_predecessor(self):
+    def test_one_account_can_have_multiple_active_isolated_tailnets(self):
         old = self.store.link_subscriber_tailnet(ACCOUNT_A, 10, INSTANCES)
-        self.store.enable_sharing(old["organization_id"])
         new = self.store.link_subscriber_tailnet(ACCOUNT_A, 11, INSTANCES)
         self.assertEqual(new["generation"], 2)
         self.assertEqual(new["active"], 1)
         self.assertNotEqual(new["organization_id"], old["organization_id"])
         with self.store.connect() as db:
-            previous = db.execute(
-                "SELECT active FROM subscriber_tailnets WHERE id=?", (old["id"],)
-            ).fetchone()
-        self.assertEqual(previous["active"], 0)
+            active = db.execute(
+                "SELECT COUNT(*) AS count FROM subscriber_tailnets WHERE account_id=? AND active=1",
+                (ACCOUNT_A,),
+            ).fetchone()["count"]
+        self.assertEqual(active, 2)
         old_state = self.store.organization_state(old["organization_id"], INSTANCES)
         new_state = self.store.organization_state(new["organization_id"], INSTANCES)
-        self.assertEqual(old_state["organization"]["mode"], "collaborative")
+        self.assertEqual(old_state["organization"]["mode"], "isolated")
         self.assertEqual(new_state["organization"]["mode"], "isolated")
+
+    def test_startup_removes_legacy_one_active_index(self):
+        with self.store.connect() as db:
+            db.execute(
+                "CREATE UNIQUE INDEX one_active_subscriber_tailnet "
+                "ON subscriber_tailnets(account_id) WHERE active=1"
+            )
+        Store(Path(self.directory.name) / "swarmsail.db")
+        with self.store.connect() as db:
+            index = db.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='index' "
+                "AND name='one_active_subscriber_tailnet'"
+            ).fetchone()
+        self.assertIsNone(index)
 
     def test_binding_cannot_be_reassigned_with_direct_sql(self):
         linked = self.store.link_subscriber_tailnet(ACCOUNT_A, 10, INSTANCES)
@@ -80,8 +94,8 @@ class SubscriberTailnetTests(unittest.TestCase):
 
     def test_account_and_instance_cannot_be_reassigned(self):
         self.store.link_subscriber_tailnet(ACCOUNT_A, 10, INSTANCES)
-        with self.assertRaisesRegex(InputError, "shared predecessor"):
-            self.store.link_subscriber_tailnet(ACCOUNT_A, 11, INSTANCES)
+        second = self.store.link_subscriber_tailnet(ACCOUNT_A, 11, INSTANCES)
+        self.assertEqual(second["account_id"], ACCOUNT_A)
         with self.assertRaisesRegex(InputError, "another account"):
             self.store.link_subscriber_tailnet(ACCOUNT_B, 10, INSTANCES)
 
