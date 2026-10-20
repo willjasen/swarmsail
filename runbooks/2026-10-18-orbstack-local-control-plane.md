@@ -30,10 +30,13 @@ docker compose -p swarmsail-local -f docker-compose.orbstack.yml up -d --build c
 ```
 
 The Python bootstrap line uses exclusive creation and is for first install only. For later runs, export the data path and use the Compose commands without the bootstrap lines.
+The control-plane image builds the Rust HTTP backend from `Cargo.toml` and `src/`; `manage_headscale.py` remains in the image only for the optional configuration-generation operation.
 
 ## Verification and recovery
 
 Confirmed `docker compose -p swarmsail-local -f docker-compose.orbstack.yml ps` and Docker health inspection report the control plane healthy; `curl -fsS http://127.0.0.1:8787/healthz` returns `{"status":"ok"}`, and `/api/state` reports zero organizations and zero Headscale instances. The actual Docker port binding is `127.0.0.1:8787`. A real invocation of `scripts.provision_subscriber.py` without `--apply` returned a planned instance while leaving the instance list empty. The container has no published remote interface and no access to the Docker socket. Its startup uses `umask 077` for newly created SQLite files; the initial database was also set to mode 600.
+
+To run the Rust backend's checks locally, use `cargo test`. The Python regression suite for the retained provisioning and configuration tools is `python3 -m unittest discover -v`.
 
 To stop only this local control plane, run `docker compose -p swarmsail-local -f docker-compose.orbstack.yml stop control-plane`. The node-local data directory is retained for restart or backup. Do not remove it to recover from a failed build; inspect Compose logs and correct the cause.
 
