@@ -302,6 +302,25 @@ def validate_config(config: dict):
     if not network.get("name") or not network.get("driver"):
         raise ValueError("network.name and network.driver are required")
     caddy = config.get("caddy", {})
+    deployment = config.get("deployment", {})
+    if not isinstance(deployment, dict):
+        raise ValueError("deployment must be an object")
+    deployment_role = deployment.get("role")
+    if deployment_role is not None and deployment_role not in ("coordinator", "droplet"):
+        raise ValueError("deployment.role must be coordinator or droplet")
+    droplet_public_ipv4 = None
+    if deployment_role == "droplet":
+        public_ipv4 = deployment.get("public_ipv4")
+        if not isinstance(public_ipv4, str):
+            raise ValueError("droplet deployment requires a valid public IPv4 address")
+        try:
+            droplet_public_ipv4 = ipaddress.IPv4Address(public_ipv4)
+        except (ipaddress.AddressValueError, TypeError) as exc:
+            raise ValueError("droplet deployment requires a valid public IPv4 address") from exc
+        if str(droplet_public_ipv4) != public_ipv4:
+            raise ValueError("deployment.public_ipv4 must use canonical IPv4 notation")
+        if not droplet_public_ipv4.is_global:
+            raise ValueError("deployment.public_ipv4 must be a globally routable IPv4 address")
     if crowdsec.get("required_for_public_hosts"):
         if not (npm.get("enabled") or caddy.get("enabled")):
             raise ValueError("CrowdSec-protected public hosts require managed ingress")
@@ -321,6 +340,8 @@ def validate_config(config: dict):
             ipaddress.ip_address(caddy["listen_ip"])
         except ValueError as exc:
             raise ValueError("caddy.listen_ip must be an IP address") from exc
+        if droplet_public_ipv4 and caddy["listen_ip"] != str(droplet_public_ipv4):
+            raise ValueError("droplet Caddy ingress must bind to deployment.public_ipv4")
         for field, default in (("http_port", 80), ("https_port", 443)):
             port = caddy.get(field, default)
             if not isinstance(port, int) or isinstance(port, bool) or not 1 <= port <= 65535:
