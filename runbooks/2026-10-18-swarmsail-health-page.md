@@ -2,7 +2,7 @@
 
 ## Objective and initial state
 
-Show a browser-friendly Swarmsail status page at `https://swarmsail.willjasen.net/health`. Caddy currently sends the whole hostname to the Rawrarr coordinator, so `/health` displays Rawrarr's health page. The Swarmsail control plane is healthy at its loopback-only port and shares Caddy's private Docker network.
+Show a browser-friendly Swarmsail status page at `https://swarmsail.willjasen.net/health`. Caddy currently sends the whole hostname to the coordinator, so `/health` displays its health page. The Swarmsail control plane is healthy at its loopback-only port and shares Caddy's private Docker network.
 
 ## Implementation
 
@@ -21,8 +21,8 @@ python3 manage_headscale.py generate \
 
 Validate the mounted Caddyfile, rebuild only the control plane, and restart Caddy with the runtime's required Compose environment (`SWARMSAIL_LOCAL_DATA_DIR` and `SWARMSAIL_LAN_IP`). Caddy and the control plane are both on `swarmsail-local-private`; the coordinator remains reached through the existing external ingress bridge.
 
-Verification passed: all 14 script tests; Python bytecode compilation; `caddy validate`; local `/healthz` returned `{"status": "ok"}` and the rebuilt container became healthy; HTTPS `/health` returned the Swarmsail status HTML with a trusted certificate; and HTTPS `/` still returned the Rawrarr landing page. A Compose `ps` check without required interpolation variables printed warnings/errors after the Caddy restart succeeded; Docker inspection confirmed both target containers were running, and subsequent checks passed.
+Verification passed: all 14 script tests; Python bytecode compilation; `caddy validate`; local `/healthz` returned `{"status": "ok"}` and the rebuilt container became healthy; HTTPS `/health` returned the Swarmsail status HTML with a trusted certificate; and HTTPS `/` still returned the coordinator landing page. A Compose `ps` check without required interpolation variables printed warnings/errors after the Caddy restart succeeded; Docker inspection confirmed both target containers were running, and subsequent checks passed.
 
 ## Recovery
 
-Remove `health_upstream` from the node-local route configuration, regenerate the Caddyfile, and restart Caddy. This restores all hostname paths to the existing Rawrarr coordinator. The app page change is harmless if retained because it is not routed publicly after rollback.
+Remove `health_upstream` from the node-local route configuration, regenerate the Caddyfile, and restart Caddy. This restores all hostname paths to the existing coordinator. The app page change is harmless if retained because it is not routed publicly after rollback.

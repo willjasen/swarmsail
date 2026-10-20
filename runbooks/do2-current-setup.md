@@ -54,18 +54,27 @@ observations above; it is a snapshot, not a guarantee of current state:
 - Compose projects were `headscale` (`/opt/headscale/docker-compose.yml`),
   `swarmsail-managed` (`/opt/swarmsail/current/docker-compose.managed.yml`),
   and the release-named Swarmsail control-plane project
-  (`/opt/swarmsail/releases/20260902T043000Z-value-only-fade/compose.swarmsail.yml`).
-- `/opt/swarmsail/current` resolved to
-  `/opt/swarmsail/releases/20260902T043000Z-value-only-fade`. The
-  `swarmsail:local` container was healthy and had been created on 2026-10-07.
-  It mounted that release's `instances.json` read-only, persistent data at
-  `/opt/swarmsail/data`, and the Docker socket read/write. The Docker socket
-  mount grants the control plane substantial host-level control; preserve
-  access restrictions around the UI and its Docker network.
-- The checked-out repository has commits dated 2026-10-18, later than the
-  active release directory and Swarmsail container creation date. Confirm
-  which source revision was used to build the live image before assuming
-  recent repository changes are deployed.
+  (`/opt/swarmsail/current/compose.swarmsail.yml`, project
+  `20260902t043000z-value-only-fade`).
+- `/opt/swarmsail/current` resolves to
+  `/opt/swarmsail/releases/20261020T022000Z-dark-default`. The
+  `swarmsail:local` container is healthy after the 2026-10-19 UI refresh and
+  2026-10-20 sky-blue theme and dark-default updates. These UI-only releases
+  preserve the previous backend, dashboard JavaScript, and organization
+  detail page. The active release mounts its `instances.json` read-only,
+  persistent data at `/opt/swarmsail/data`, and the Docker socket read/write.
+  The Docker socket mount grants the control plane substantial host-level
+  control; preserve access restrictions around the UI and its Docker network.
+  `swarmsail:rollback-dark-default-20261020t022000z` preserves the preceding
+  sky-blue release with system-preference default.
+  `swarmsail:rollback-sky-blue-20261020t021000z` preserves the previous
+  parchment/forest design.
+  Rollback image `swarmsail:rollback-dashboard-20261020t014500z` preserves the
+  pre-redesign image.
+- The active release's backend and helper files were copied from the
+  2026-09-02 release during the 2026-10-19 UI refresh; only its dashboard
+  template was updated from the checkout. Do not assume other repository
+  changes are deployed without inspecting the active release.
 - `headscale-resicom` was running `headscale/headscale:latest`, with TCP
   8080 published as host port 8081 on all IPv4 and IPv6 interfaces and UDP
   3478 published on all interfaces. `headscale-nerdhirn` used a
@@ -81,23 +90,21 @@ observations above; it is a snapshot, not a guarantee of current state:
   bound to `127.0.0.1:7422`. Tailscale Serve reported the NPM admin path as
   tailnet-only and also reported a separate tailnet-only listener on port
   8888 forwarding to `localhost:8888`; confirm the owner and intended use of
-  that additional listener before changing it.
+  that additional listener before changing it. Swarmsail is now served at
+  `https://<do2-tailscale-hostname>/` on tailnet-only HTTPS port 443, proxied
+  to `http://127.0.0.1:8787`; this route was verified from an authorized
+  tailnet client on 2026-10-19.
 - The root filesystem was 78% used (6.8 GiB of 8.7 GiB, about 2.0 GiB free)
   and inode use was 14%. Docker reported about 904 MiB of images and 44 MiB
   of build cache. Continue treating disk capacity as a maintenance concern.
 
 This snapshot confirms container health and local deployment state only. It
-does not establish end-to-end client connectivity, external DNS correctness,
-or Headscale enrollment. Re-run the service-specific checks below before
-making operational changes.
-
-The container-local Swarmsail `/healthz` check returned `{"status": "ok"}`.
-However, from `do2`, the Swarmsail HTTPS hostname resolved to an RFC1918
-address, and requests to both `/health` and `/healthz` timed out. Confirm
-whether split-horizon/private routing is intended; until that is understood,
-the HTTPS route is not verified as reachable from `do2`. Do not record the
-resolved address here, and ensure any intended Swarmsail DNS record points
-directly to the hosting server without proxying.
+does not establish external DNS correctness or Headscale enrollment. The
+tailnet-only Tailscale Serve route was subsequently verified from an
+authorized client: `https://<do2-tailscale-hostname>/` returned the Swarmsail
+UI and `/healthz` returned `{"status": "ok"}`. This does not imply public
+internet exposure; verify split-horizon routing and direct, non-proxied DNS
+separately if a public hostname is introduced.
 
 ## First-response inventory
 
@@ -226,16 +233,57 @@ integration functions and mounts the selected release’s `instances.json`
 read-only. A legacy `swarmsail.service` also exists, but was disabled and
 inactive at capture time.
 
+The UI is exposed to the tailnet using Tailscale Serve on HTTPS port 443.
+Clients must be connected to the tailnet, and the tailnet policy must allow
+TCP 443 to this host. The current client policy did not allow the custom Serve
+ports 81, 8443, or 8888, so use the default HTTPS URL without a port suffix.
+The backend process currently listens on `0.0.0.0:8787`; Serve proxies to
+loopback, but this does not by itself prevent direct access to port 8787 from
+other networks. Confirm the host/cloud firewall and intended NPM upstream
+before restricting that listener.
+
+The deployed dashboard uses a left navigation rail with grouped setup,
+access-policy, and inventory sections, a light sky-blue palette with a
+coordinated dark mode, and responsive layouts. Dark mode is now the default for
+first-time dashboard and CrowdSec page visitors; an explicitly saved theme
+choice in browser local storage still takes precedence. The 2026-10-20
+dark-default update intentionally preserved the existing server-side handlers,
+page behavior, and organization detail markup.
+
 ```sh
 readlink -f /opt/swarmsail/current
 docker inspect --format '{{json .Mounts}}' swarmsail
 docker inspect --format '{{json .State.Health}}' swarmsail
 docker logs --tail=200 swarmsail
 docker exec swarmsail sh -c 'wget -qO- http://${SWARMSAIL_HOST:-127.0.0.1}:${SWARMSAIL_PORT:-8787}/healthz'
+tailscale serve status
+tailscale serve --bg --https=443 http://127.0.0.1:8787
+curl -fsS https://<do2-tailscale-hostname>/healthz
 ```
 
 Verify the rendered UI/API and the inventory refresh, not only the container
 health status. Keep database backups before release changes.
+Open `https://<do2-tailscale-hostname>/` in a browser on a tailnet-connected
+client. To remove only this route, run
+`tailscale serve --https=443 off` on `do2`; this leaves the other Serve routes
+intact.
+
+To roll back the UI-only update, restore the saved image tag, recreate only
+the Swarmsail control-plane service from the retained release, then restore
+the release symlink:
+
+```sh
+docker tag swarmsail:rollback-dark-default-20261020t022000z swarmsail:local
+docker compose -p 20260902t043000z-value-only-fade \
+  -f /opt/swarmsail/releases/20261020T021000Z-dashboard-sky-blue/compose.swarmsail.yml \
+  up -d --no-build --force-recreate swarmsail
+docker inspect --format '{{.State.Health.Status}}' swarmsail
+ln -s /opt/swarmsail/releases/20261020T021000Z-dashboard-sky-blue /opt/swarmsail/current.rollback
+mv -Tf /opt/swarmsail/current.rollback /opt/swarmsail/current
+```
+
+Remove `swarmsail:rollback-dark-default-20261020t022000z` only after the new UI has
+passed its observation period and rollback is no longer needed.
 
 ### NPM Plus and CrowdSec
 

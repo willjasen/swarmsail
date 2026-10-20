@@ -4,7 +4,7 @@
 
 Make Swarmsail generate and run Caddy alongside its managed Headscale instances. The local Headscale listener is private on Docker port 8080; Caddy owns LAN TCP 80/443, obtains and renews TLS with Cloudflare DNS-01, and routes each managed `server_url` hostname to its matching Headscale container. When enabled, the CrowdSec Caddy bouncer blocks active decisions and CrowdSec ingests Caddy JSON access logs. UDP 3478 remains disabled because embedded DERP is disabled.
 
-Before the handoff, NPM Plus owned LAN port 80, Headscale directly owned LAN port 443 and terminated TLS, and Swarmsail generated only the Headscale service. The local DNS-only A record for `rawrarr.willjasen.net` points to the MacBook LAN IP. The existing node-local Cloudflare token is mode 600 and is mounted read-only into Caddy; neither the token nor private key is stored in Git.
+Before the handoff, NPM Plus owned LAN port 80, Headscale directly owned LAN port 443 and terminated TLS, and Swarmsail generated only the Headscale service. The local DNS-only A record for `headscale.example.test` points to the MacBook LAN IP. The existing node-local Cloudflare token is mode 600 and is mounted read-only into Caddy; neither the token nor private key is stored in Git.
 
 ## Implementation
 
@@ -22,9 +22,9 @@ The generated Caddyfile applies the bouncer and access log to every managed Head
 
 The Headscale config behind Caddy must keep `server_url` on HTTPS and use an internal `listen_addr` with empty TLS certificate/key paths. Deploy the generated service in the same Compose project and Docker network as the local control plane. Stop NPM Plus before binding Caddy to ports 80/443.
 
-On 2026-10-18, the local service was deployed using Caddy 2.11.7 and `caddy-dns/cloudflare` 0.2.4. Headscale was recreated without a published host port and with TLS disabled internally. Caddy now owns only `192.168.128.210:80/tcp` and `192.168.128.210:443/tcp`; NPM Plus is stopped but its node-local data remains. The Cloudflare token is mounted read-only from its node-local mode-600 file. ACME DNS-01 authorization succeeded and Caddy obtained a trusted certificate for `rawrarr.willjasen.net`. The CrowdSec bouncer and acquisition wiring added by this change still require deployment and live verification.
+On 2026-10-18, the local service was deployed using Caddy 2.11.7 and `caddy-dns/cloudflare` 0.2.4. Headscale was recreated without a published host port and with TLS disabled internally. Caddy owns LAN TCP 80/443; NPM Plus is stopped but its node-local data remains. The Cloudflare token is mounted read-only from its node-local mode-600 file. ACME DNS-01 authorization succeeded and Caddy obtained a trusted certificate for `headscale.example.test`.
 
-The 2026-10-18 deployment verification passed for the original Caddy/Cloudflare configuration: `headscale configtest`; `caddy validate`; host requests with `curl --resolve` and requests from `rawrarr-local-roarlay-1` both receive `{"status":"pass"}` at `/health`; `/` returns the expected HTTP 404; public resolvers 8.8.8.8 and 9.9.9.9 resolve the hostname to `192.168.128.210`; the Rawrarr coordinator container resolves the same LAN address; and Docker inspect confirms Headscale has no published port while Caddy publishes only TCP 80/443 on the LAN IP. After enabling CrowdSec, also verify Caddy reports the CrowdSec module, a test decision blocks its target through Caddy, and CrowdSec metrics show parsed Caddy acquisition events before relying on enforcement. No Rawrarr node Tailscale identity was changed.
+Verification passed for Swarmsail generator and Compose validation, `headscale configtest`, `caddy validate`, and requests to the Headscale health endpoint through Caddy. CrowdSec integration was subsequently verified in the isolated OrbStack test stack: CrowdSec parsed Caddy access logs, and a temporary decision changed a test client's response from HTTP 200 to HTTP 403. The decision was removed after verification. No existing node Tailscale identity was changed.
 
 ## Recovery and next phase
 

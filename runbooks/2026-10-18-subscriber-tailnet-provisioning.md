@@ -2,7 +2,7 @@
 
 ## Purpose and initial state
 
-Start the Rawrarr account-to-Swarmsail integration with a repeatable, idempotent provisioning path. The Codebox Git checkout had the web control plane and SQLite organization model, but its imported `manage_headscale.py` and Headscale config template were absent. The live `do2` release under `/opt/swarmsail/current` contains those files and owns the active deployment. See [current do2 setup](do2-current-setup.md) and [the prior sharing transition](2026-10-18-rawrarr-tailnet-sharing-transition.md).
+Start the subscriber account-to-Swarmsail integration with a repeatable, idempotent provisioning path. The Codebox Git checkout had the web control plane and SQLite organization model, but its imported `manage_headscale.py` and Headscale config template were absent. The live `do2` release under `/opt/swarmsail/current` contains those files and owns the active deployment. See [current do2 setup](do2-current-setup.md) and [the prior sharing transition](2026-10-18-tailnet-sharing-transition.md).
 
 ## Actions
 
@@ -36,4 +36,4 @@ Ran `python3 -m unittest discover -s tests -q` (20 passed), `python3 -m unittest
 
 ## Recovery and remaining work
 
-Source changes can be reverted by a scoped Git revert. A failed reservation after the config write can be retried with the same account UUID and network settings to complete the SQLite mapping. Before any live deployment, take and verify restorable backups of the current release, config, and SQLite state; stage a separate release and update only the Swarmsail-owned service. The hosted Rawrarr account and verified trial/subscription service do not exist yet, so automatic sign-in-triggered provisioning remains blocked on that separate component. DNS, HTTPS ingress, Headscale policy, actual container startup, device enrollment, and pairwise cross-instance routes are separate unimplemented steps.
+Source changes can be reverted by a scoped Git revert. A failed reservation after the config write can be retried with the same account UUID and network settings to complete the SQLite mapping. Before any live deployment, take and verify restorable backups of the current release, config, and SQLite state; stage a separate release and update only the Swarmsail-owned service. The hosted account and verified trial/subscription service do not exist yet, so automatic sign-in-triggered provisioning remains blocked on that separate component. DNS, HTTPS ingress, Headscale policy, actual container startup, device enrollment, and pairwise cross-instance routes are separate unimplemented steps.
