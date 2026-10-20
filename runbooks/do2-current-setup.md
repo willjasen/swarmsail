@@ -57,14 +57,16 @@ observations above; it is a snapshot, not a guarantee of current state:
   (`/opt/swarmsail/current/compose.swarmsail.yml`, project
   `20260902t043000z-value-only-fade`).
 - `/opt/swarmsail/current` resolves to
-  `/opt/swarmsail/releases/20261020T021000Z-dashboard-sky-blue`. The
+  `/opt/swarmsail/releases/20261020T022000Z-dark-default`. The
   `swarmsail:local` container is healthy after the 2026-10-19 UI refresh and
-  2026-10-20 sky-blue theme update. These UI-only releases preserve the
-  previous backend, dashboard JavaScript, and organization detail page. The
-  active release mounts its `instances.json` read-only, persistent data at
-  `/opt/swarmsail/data`, and the Docker socket read/write. The Docker socket
-  mount grants the control plane substantial host-level control; preserve
-  access restrictions around the UI and its Docker network.
+  2026-10-20 sky-blue theme and dark-default updates. These UI-only releases
+  preserve the previous backend, dashboard JavaScript, and organization
+  detail page. The active release mounts its `instances.json` read-only,
+  persistent data at `/opt/swarmsail/data`, and the Docker socket read/write.
+  The Docker socket mount grants the control plane substantial host-level
+  control; preserve access restrictions around the UI and its Docker network.
+  `swarmsail:rollback-dark-default-20261020t022000z` preserves the preceding
+  sky-blue release with system-preference default.
   `swarmsail:rollback-sky-blue-20261020t021000z` preserves the previous
   parchment/forest design.
   Rollback image `swarmsail:rollback-dashboard-20261020t014500z` preserves the
@@ -242,11 +244,11 @@ before restricting that listener.
 
 The deployed dashboard uses a left navigation rail with grouped setup,
 access-policy, and inventory sections, a light sky-blue palette with a
-coordinated dark mode, and responsive layouts. The 2026-10-20 theme update
-intentionally preserved the existing server-side handlers, page JavaScript,
-and organization detail markup. The previous parchment/forest image is retained as
-`swarmsail:rollback-sky-blue-20261020t021000z`; the original pre-redesign
-image remains `swarmsail:rollback-dashboard-20261020t014500z`.
+coordinated dark mode, and responsive layouts. Dark mode is now the default for
+first-time dashboard and CrowdSec page visitors; an explicitly saved theme
+choice in browser local storage still takes precedence. The 2026-10-20
+dark-default update intentionally preserved the existing server-side handlers,
+page behavior, and organization detail markup.
 
 ```sh
 readlink -f /opt/swarmsail/current
@@ -271,16 +273,16 @@ the Swarmsail control-plane service from the retained release, then restore
 the release symlink:
 
 ```sh
-docker tag swarmsail:rollback-sky-blue-20261020t021000z swarmsail:local
+docker tag swarmsail:rollback-dark-default-20261020t022000z swarmsail:local
 docker compose -p 20260902t043000z-value-only-fade \
-  -f /opt/swarmsail/releases/20261020T015000Z-dashboard-refresh/compose.swarmsail.yml \
+  -f /opt/swarmsail/releases/20261020T021000Z-dashboard-sky-blue/compose.swarmsail.yml \
   up -d --no-build --force-recreate swarmsail
 docker inspect --format '{{.State.Health.Status}}' swarmsail
-ln -s /opt/swarmsail/releases/20261020T015000Z-dashboard-refresh /opt/swarmsail/current.rollback
+ln -s /opt/swarmsail/releases/20261020T021000Z-dashboard-sky-blue /opt/swarmsail/current.rollback
 mv -Tf /opt/swarmsail/current.rollback /opt/swarmsail/current
 ```
 
-Remove `swarmsail:rollback-sky-blue-20261020t021000z` only after the new UI has
+Remove `swarmsail:rollback-dark-default-20261020t022000z` only after the new UI has
 passed its observation period and rollback is no longer needed.
 
 ### NPM Plus and CrowdSec
