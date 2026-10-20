@@ -44,6 +44,61 @@ Observed host-level facts:
 - DNS records for Swarmsail names must point directly to the hosting server;
   do not enable DNS proxying.
 
+## Live inventory snapshot (2026-10-19)
+
+This read-only SSH inventory supersedes the older resource and container
+observations above; it is a snapshot, not a guarantee of current state:
+
+- SSH access succeeded as `root@do2.risk-mermaid.ts.net`.
+- Docker, Resilio Sync, and Tailscale systemd services were active.
+- Compose projects were `headscale` (`/opt/headscale/docker-compose.yml`),
+  `swarmsail-managed` (`/opt/swarmsail/current/docker-compose.managed.yml`),
+  and the release-named Swarmsail control-plane project
+  (`/opt/swarmsail/releases/20260902T043000Z-value-only-fade/compose.swarmsail.yml`).
+- `/opt/swarmsail/current` resolved to
+  `/opt/swarmsail/releases/20260902T043000Z-value-only-fade`. The
+  `swarmsail:local` container was healthy and had been created on 2026-10-07.
+  It mounted that release's `instances.json` read-only, persistent data at
+  `/opt/swarmsail/data`, and the Docker socket read/write. The Docker socket
+  mount grants the control plane substantial host-level control; preserve
+  access restrictions around the UI and its Docker network.
+- The checked-out repository has commits dated 2026-10-18, later than the
+  active release directory and Swarmsail container creation date. Confirm
+  which source revision was used to build the live image before assuming
+  recent repository changes are deployed.
+- `headscale-resicom` was running `headscale/headscale:latest`, with TCP
+  8080 published as host port 8081 on all IPv4 and IPv6 interfaces and UDP
+  3478 published on all interfaces. `headscale-nerdhirn` used a
+  digest-qualified image reference and published UDP 3478 as host port 3479
+  on all interfaces. Both containers reported the same image ID during this
+  inventory, and both reported Headscale v0.27.0. The `latest` tag is
+  mutable; record the resolved digest and intended version before upgrades.
+  Confirm the intended exposure of the ResiCom TCP listener and both STUN
+  listeners before changing these bindings; they are broader than
+  loopback-only.
+- NPM Plus and CrowdSec were healthy/running. NPM Plus published 80/443 on
+  all interfaces and its admin port as `127.0.0.1:8181`; CrowdSec's API was
+  bound to `127.0.0.1:7422`. Tailscale Serve reported the NPM admin path as
+  tailnet-only and also reported a separate tailnet-only listener on port
+  8888 forwarding to `localhost:8888`; confirm the owner and intended use of
+  that additional listener before changing it.
+- The root filesystem was 78% used (6.8 GiB of 8.7 GiB, about 2.0 GiB free)
+  and inode use was 14%. Docker reported about 904 MiB of images and 44 MiB
+  of build cache. Continue treating disk capacity as a maintenance concern.
+
+This snapshot confirms container health and local deployment state only. It
+does not establish end-to-end client connectivity, external DNS correctness,
+or Headscale enrollment. Re-run the service-specific checks below before
+making operational changes.
+
+The container-local Swarmsail `/healthz` check returned `{"status": "ok"}`.
+However, from `do2`, the Swarmsail HTTPS hostname resolved to an RFC1918
+address, and requests to both `/health` and `/healthz` timed out. Confirm
+whether split-horizon/private routing is intended; until that is understood,
+the HTTPS route is not verified as reachable from `do2`. Do not record the
+resolved address here, and ensure any intended Swarmsail DNS record points
+directly to the hosting server without proxying.
+
 ## First-response inventory
 
 Use the local SSH alias or an approved address. These commands are read-only:
