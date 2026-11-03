@@ -3,6 +3,8 @@
 ## Project
 
 - `swarmsail` runs multiple Headscale servers.
+- Swarmsail is open source under the repository's GPL-3.0 license; treat this repository and its documentation as public.
+- Keep examples portable and suitable for public contributors. Use placeholders for private hosts, addresses, account identifiers, and deployment paths; never commit production data or credentials.
 - DNS records for Swarmsail must point directly to the hosting server; do not use record proxying.
 
 ## Working conventions
