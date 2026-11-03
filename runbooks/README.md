@@ -1,5 +1,6 @@
 # Swarmsail runbooks
 
+- [Overview-first dashboard layout](2026-11-02-overview-first-dashboard-layout.md) — Lead with inventory and summary counts, and deploy the updated Swarmsail dashboard to `do3`.
 - [Analyze disk space](analyze-disk-space.md) — Inspect storage usage and cleanup candidates.
 - [Local OrbStack control plane](2026-10-18-orbstack-local-control-plane.md) — Run Swarmsail locally on loopback with node-local state.
 - [Local OrbStack support stack](2026-10-18-orbstack-support-stack.md) — Deploy local Headscale, NPM Plus, and CrowdSec; finish LAN HTTPS after DNS-01 issuance.
