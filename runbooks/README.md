@@ -1,5 +1,6 @@
 # Swarmsail runbooks
 
+- [Restore do3 overview layout](2026-11-02-restore-do3-overview-layout.md) — Restore the overview-first landing page in the Rust dashboard while retaining its light-blue styling.
 - [Update do3 from GitHub](2026-11-02-update-do3-from-github.md) — Build the latest public `main` revision and update only the live Swarmsail service on `do3`.
 - [Overview-first dashboard layout](2026-11-02-overview-first-dashboard-layout.md) — Lead with inventory and summary counts, and deploy the updated Swarmsail dashboard to `do3`.
 - [Analyze disk space](analyze-disk-space.md) — Inspect storage usage and cleanup candidates.
