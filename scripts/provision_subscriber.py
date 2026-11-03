@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Plan or reserve one managed Headscale instance for an eligible Rawrarr account."""
+"""Plan or reserve an isolated managed Headscale tailnet for a Swarmsail account."""
 
 import argparse
 import copy
@@ -9,11 +9,9 @@ import ipaddress
 import json
 import os
 import re
-import sqlite3
 import stat
 import tempfile
 import uuid
-from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -77,28 +75,8 @@ def next_prefix(instances, account_id):
     raise ValueError("no free /26 prefix remains")
 
 
-def active_tailnet(database, account_id):
-    path = Path(database).resolve()
-    if not path.exists():
-        raise ValueError("account has no existing tailnet")
-    try:
-        with closing(sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True)) as db:
-            db.row_factory = sqlite3.Row
-            row = db.execute(
-                """SELECT st.*, o.mode FROM subscriber_tailnets st
-                   JOIN organizations o ON o.id=st.organization_id
-                   WHERE st.account_id=? AND st.active=1""",
-                (account_id,),
-            ).fetchone()
-    except sqlite3.Error as exc:
-        raise ValueError("could not read existing subscriber tailnet") from exc
-    if row is None:
-        raise ValueError("account has no active tailnet")
-    return dict(row)
-
-
 def plan(config, account_id, kind, eligible_until, server_url, base_domain,
-         data_root, new_private=False, current=None):
+         data_root):
     account_id = canonical_account_id(account_id)
     active_eligibility(kind, eligible_until)
     server_url = https_origin(server_url)
@@ -111,38 +89,22 @@ def plan(config, account_id, kind, eligible_until, server_url, base_domain,
     instances = original["headscale"]["instances"]
     matching = [item for item in instances
                 if item.get("subscriber_account_id") == account_id]
-    if matching:
-        latest = max(matching, key=lambda item: item.get("subscriber_generation", 1))
-        if not new_private:
-            if (latest.get("server_url", "").rstrip("/") != server_url
-                    or latest.get("base_domain") != base_domain):
-                raise ValueError("account is already reserved with different network settings")
-            return original, latest, False
-        if (current and current["generation"] > 1
-                and current["headscale_instance"] == str(latest["id"])
-                and current["mode"] == "isolated"):
-            if (latest.get("server_url", "").rstrip("/") != server_url
-                    or latest.get("base_domain") != base_domain):
-                raise ValueError("new private tailnet is already reserved with different settings")
-            return original, latest, False
-        if (not current or current["mode"] != "collaborative"
-                or current["headscale_instance"] not in {str(item["id"]) for item in matching}):
-            raise ValueError("a new private tailnet requires an active shared predecessor")
-        next_generation = current["generation"] + 1
-        if latest.get("subscriber_generation", 1) == next_generation:
-            if (latest.get("server_url", "").rstrip("/") != server_url
-                    or latest.get("base_domain") != base_domain):
-                raise ValueError("new private tailnet is already reserved with different settings")
-            return original, latest, False
-        if latest.get("subscriber_generation", 1) != current["generation"]:
-            raise ValueError("subscriber tailnet generations are inconsistent")
-    elif new_private:
-        raise ValueError("account has no tailnet to replace")
+    for item in matching:
+        same_origin = item.get("server_url", "").rstrip("/") == server_url
+        same_domain = item.get("base_domain") == base_domain
+        if same_origin and same_domain:
+            return original, item, False
+        if same_origin or same_domain:
+            raise ValueError("subscriber tailnet is already reserved with different network settings")
     if any(item.get("server_url", "").rstrip("/") == server_url for item in instances):
         raise ValueError("server URL is already assigned")
     if any(item.get("base_domain") == base_domain for item in instances):
         raise ValueError("base domain is already assigned")
     instance_id = max((item["id"] for item in instances), default=0) + 1
+    generation = max(
+        (item.get("subscriber_generation", 1) for item in matching),
+        default=0,
+    ) + 1
     used_ports = {item["web_port"] for item in instances}
     used_ports.update(item.get("stun_port") for item in instances if item.get("stun_port_udp"))
     web_port = next((port for port in range(8081, 65536) if port not in used_ports), None)
@@ -150,13 +112,13 @@ def plan(config, account_id, kind, eligible_until, server_url, base_domain,
         raise ValueError("no available configured port remains")
     instance = {
         "id": instance_id,
-        "slug": f"rawrarr-{instance_id}",
-        "display_name": f"Rawrarr tailnet {instance_id}",
+        "slug": f"swarmsail-{instance_id}",
+        "display_name": f"Swarmsail tailnet {instance_id}",
         "subscriber_account_id": account_id,
-        "subscriber_generation": current["generation"] + 1 if new_private else 1,
+        "subscriber_generation": generation,
         "organization_mode": "isolated",
         "management_mode": "managed",
-        "service_name": f"headscale-rawrarr-{instance_id}",
+        "service_name": f"headscale-swarmsail-{instance_id}",
         "server_url": server_url,
         "base_domain": base_domain,
         "ipv4_prefix": next_prefix(instances, account_id),
@@ -197,11 +159,9 @@ def run(args):
         return json.loads(config_path.read_text(encoding="utf-8"))
 
     if not args.apply:
-        current = active_tailnet(args.database, args.account_id) if args.new_private else None
         _, instance, created = plan(load(), args.account_id, args.eligibility,
                                     args.eligible_until, args.server_url,
-                                    args.base_domain, args.data_root,
-                                    new_private=args.new_private, current=current)
+                                    args.base_domain, args.data_root)
         return {"action": "reserve" if created else "already_reserved",
                 "instance_id": instance["id"], "ipv4_prefix": instance["ipv4_prefix"],
                 "applied": False}
@@ -209,11 +169,9 @@ def run(args):
     lock_path = config_path.with_name(f".{config_path.name}.lock")
     with lock_path.open("a+") as lock:
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-        current = active_tailnet(args.database, args.account_id) if args.new_private else None
         updated, instance, created = plan(load(), args.account_id, args.eligibility,
                                            args.eligible_until, args.server_url,
-                                           args.base_domain, args.data_root,
-                                           new_private=args.new_private, current=current)
+                                           args.base_domain, args.data_root)
         if created:
             write_config_atomically(config_path, updated)
         Store(args.database).link_subscriber_tailnet(
@@ -234,8 +192,6 @@ def main():
     parser.add_argument("--server-url", required=True)
     parser.add_argument("--base-domain", required=True)
     parser.add_argument("--data-root", required=True)
-    parser.add_argument("--new-private", action="store_true",
-                        help="reserve a new private generation after the active tailnet became shared")
     parser.add_argument("--apply", action="store_true")
     args = parser.parse_args()
     try:

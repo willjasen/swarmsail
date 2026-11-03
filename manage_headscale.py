@@ -85,66 +85,111 @@ def generate_npm_service(npm_config: dict, network_name: str) -> dict:
     }
 
 
-def generate_crowdsec_service(crowdsec_config: dict, network_name: str) -> dict:
-    """Generate CrowdSec service definition."""
-    return {
+def generate_crowdsec_service(
+    crowdsec_config: dict, network_name: str, caddy_config: dict | None = None
+) -> dict:
+    """Generate CrowdSec with log acquisition for the configured ingress."""
+    service = {
         "container_name": "crowdsec",
         "image": "docker.io/crowdsecurity/crowdsec:latest",
         "restart": "unless-stopped",
         "networks": [network_name],
-        "ports": ["127.0.0.1:7422:7422"],
         "environment": [
             f"TZ={crowdsec_config['timezone']}",
-            "COLLECTIONS=ZoeyVid/npmplus"
         ],
         "volumes": [
-            "./crowdsec/conf:/etc/crowdsec",
-            "./crowdsec/data:/var/lib/crowdsec/data",
-            "./npm/data/nginx:/opt/npmplus/nginx:ro"
-        ]
+            f"{crowdsec_config.get('config_dir', './crowdsec/conf')}:/etc/crowdsec",
+            f"{crowdsec_config.get('data_dir', './crowdsec/data')}:/var/lib/crowdsec/data",
+        ],
     }
+    if caddy_config:
+        service["ports"] = ["127.0.0.1:7422:8080"]
+        service["environment"].append("COLLECTIONS=crowdsecurity/caddy")
+        service["volumes"].append(f"{caddy_config['log_dir']}:/var/log/caddy:ro")
+    else:
+        service["ports"] = ["127.0.0.1:7422:7422"]
+        service["environment"].append("COLLECTIONS=ZoeyVid/npmplus")
+        service["volumes"].append("./npm/data/nginx:/opt/npmplus/nginx:ro")
+    return service
+
+
+def caddy_crowdsec_enabled(config: dict) -> bool:
+    crowdsec = config.get("crowdsec", {})
+    return bool(crowdsec.get("enabled") or crowdsec.get("externally_managed"))
 
 
 def generate_caddyfile(config: dict) -> str:
     """Generate host-based HTTPS routes for Headscale and approved services."""
+    crowdsec_enabled = caddy_crowdsec_enabled(config)
+    crowdsec = config.get("crowdsec", {})
+    global_options = [
+        "    admin off",
+        "    acme_dns cloudflare {file./run/secrets/cloudflare-dns-token}",
+        "    tls_resolvers 8.8.8.8 9.9.9.9",
+    ]
+    if crowdsec_enabled:
+        global_options.extend((
+            "    log {",
+            "        level ERROR",
+            "    }",
+            "    crowdsec {",
+            f"        api_url {crowdsec.get('api_url') or 'http://crowdsec:8080'}",
+            "        api_key {$CROWDSEC_API_KEY}",
+            "    }",
+        ))
+
+    def site_block(hostname: str, upstream: str, health_upstream: str | None = None):
+        lines = [f"{hostname.lower()} {{"]
+        if crowdsec_enabled:
+            lines.extend(("    route {", "        crowdsec"))
+            if health_upstream:
+                lines.extend((
+                    "        @swarmsail_health path /health",
+                    "        handle @swarmsail_health {",
+                    f"            reverse_proxy {health_upstream}",
+                    "        }",
+                    "        handle {",
+                    f"            reverse_proxy {upstream}",
+                    "        }",
+                ))
+            else:
+                lines.append(f"        reverse_proxy {upstream}")
+            lines.extend(("    }", "    log {", "        output file /var/log/caddy/access.log", "    }"))
+        elif health_upstream:
+            lines.extend((
+                "    @swarmsail_health path /health",
+                "    handle @swarmsail_health {",
+                f"        reverse_proxy {health_upstream}",
+                "    }",
+                "    handle {",
+                f"        reverse_proxy {upstream}",
+                "    }",
+            ))
+        else:
+            lines.append(f"    reverse_proxy {upstream}")
+        lines.extend(("}", ""))
+        return lines
+
     routes = []
     for instance in config["headscale"]["instances"]:
         if is_adopted(instance):
             continue
         parsed = urlsplit(instance["server_url"])
         upstream = instance.get("service_name", f"headscale-{instance['id']}")
-        routes.extend((
-            f"{parsed.hostname.lower()} {{",
-            f"    reverse_proxy {upstream}:8080",
-            "}",
-            "",
-        ))
+        routes.extend(site_block(parsed.hostname, f"{upstream}:8080"))
     for route in config.get("caddy", {}).get("proxy_routes", []):
-        routes.append(f"{route['hostname'].lower()} {{")
-        health_upstream = route.get("health_upstream")
-        if health_upstream:
-            routes.extend((
-                "    @swarmsail_health path /health",
-                "    handle @swarmsail_health {",
-                f"        reverse_proxy {health_upstream}",
-                "    }",
-                "    handle {",
-                f"        reverse_proxy {route['upstream']}",
-                "    }",
-            ))
-        else:
-            routes.append(f"    reverse_proxy {route['upstream']}")
-        routes.extend(("}", ""))
-    return (
-        "{\n    admin off\n    acme_dns cloudflare {file./run/secrets/cloudflare-dns-token}\n"
-        "    tls_resolvers 8.8.8.8 9.9.9.9\n}\n\n" + "\n".join(routes)
-    )
+        routes.extend(site_block(
+            route["hostname"], route["upstream"], route.get("health_upstream")
+        ))
+    return "{\n" + "\n".join(global_options) + "\n}\n\n" + "\n".join(routes)
 
 
-def generate_caddy_service(caddy_config: dict, network_name: str) -> dict:
+def generate_caddy_service(
+    caddy_config: dict, network_name: str, crowdsec_enabled: bool = False
+) -> dict:
     """Generate the Swarmsail-owned Caddy DNS-01 ingress service."""
     config_dir = Path(caddy_config["config_dir"])
-    return {
+    service = {
         "image": caddy_config.get("image", "swarmsail-caddy:local"),
         "build": {
             "context": str(Path(__file__).resolve().parent),
@@ -169,6 +214,10 @@ def generate_caddy_service(caddy_config: dict, network_name: str) -> dict:
         "security_opt": ["no-new-privileges:true"],
         "networks": [network_name, *caddy_config.get("external_networks", [])],
     }
+    if crowdsec_enabled:
+        service["volumes"].append(f"{caddy_config['log_dir']}:/var/log/caddy")
+        service["secrets"] = ["crowdsec-bouncer-api-key"]
+    return service
 
 
 def generate_compose(config: dict) -> dict:
@@ -189,9 +238,10 @@ def generate_compose(config: dict) -> dict:
         )
 
     caddy_config = config.get("caddy", {})
+    crowdsec_config = config.get("crowdsec", {})
     if caddy_config.get("enabled"):
         services[caddy_config.get("service_name", "caddy")] = generate_caddy_service(
-            caddy_config, network_name
+            caddy_config, network_name, caddy_crowdsec_enabled(config)
         )
 
     # Add NPM Plus if enabled
@@ -199,8 +249,11 @@ def generate_compose(config: dict) -> dict:
         services["npmplus"] = generate_npm_service(config["npm"], network_name)
 
     # Add CrowdSec if enabled
-    if not adoption_mode and config.get("crowdsec", {}).get("enabled"):
-        services["crowdsec"] = generate_crowdsec_service(config["crowdsec"], network_name)
+    if not adoption_mode and crowdsec_config.get("enabled"):
+        services["crowdsec"] = generate_crowdsec_service(
+            crowdsec_config, network_name,
+            caddy_config if caddy_config.get("enabled") else None,
+        )
 
     # Create networks section
     if adoption_mode:
@@ -211,7 +264,14 @@ def generate_compose(config: dict) -> dict:
         for external_network in caddy_config.get("external_networks", []):
             networks[external_network] = {"external": True, "name": external_network}
 
-    return {"services": services, "networks": networks}
+    result = {"services": services, "networks": networks}
+    if caddy_config.get("enabled") and caddy_crowdsec_enabled(config):
+        result["secrets"] = {
+            "crowdsec-bouncer-api-key": {
+                "file": crowdsec_config["bouncer_api_key_path"]
+            }
+        }
+    return result
 
 
 def is_adopted(instance: dict) -> bool:
@@ -241,16 +301,35 @@ def validate_config(config: dict):
         raise ValueError("headscale.instances must be a list")
     if not network.get("name") or not network.get("driver"):
         raise ValueError("network.name and network.driver are required")
+    caddy = config.get("caddy", {})
+    deployment = config.get("deployment", {})
+    if not isinstance(deployment, dict):
+        raise ValueError("deployment must be an object")
+    deployment_role = deployment.get("role")
+    if deployment_role is not None and deployment_role not in ("coordinator", "droplet"):
+        raise ValueError("deployment.role must be coordinator or droplet")
+    droplet_public_ipv4 = None
+    if deployment_role == "droplet":
+        public_ipv4 = deployment.get("public_ipv4")
+        if not isinstance(public_ipv4, str):
+            raise ValueError("droplet deployment requires a valid public IPv4 address")
+        try:
+            droplet_public_ipv4 = ipaddress.IPv4Address(public_ipv4)
+        except (ipaddress.AddressValueError, TypeError) as exc:
+            raise ValueError("droplet deployment requires a valid public IPv4 address") from exc
+        if str(droplet_public_ipv4) != public_ipv4:
+            raise ValueError("deployment.public_ipv4 must use canonical IPv4 notation")
+        if not droplet_public_ipv4.is_global:
+            raise ValueError("deployment.public_ipv4 must be a globally routable IPv4 address")
     if crowdsec.get("required_for_public_hosts"):
-        if not npm.get("enabled"):
-            raise ValueError("CrowdSec-protected public hosts require NPM Plus")
+        if not (npm.get("enabled") or caddy.get("enabled")):
+            raise ValueError("CrowdSec-protected public hosts require managed ingress")
         if not (crowdsec.get("enabled") or crowdsec.get("externally_managed")):
             raise ValueError(
                 "CrowdSec-protected public hosts require managed or external CrowdSec"
             )
 
     seen_proxy_hosts = set()
-    caddy = config.get("caddy", {})
     if caddy.get("enabled"):
         if npm.get("enabled"):
             raise ValueError("Caddy and NPM Plus cannot both own public HTTP/HTTPS ports")
@@ -261,6 +340,8 @@ def validate_config(config: dict):
             ipaddress.ip_address(caddy["listen_ip"])
         except ValueError as exc:
             raise ValueError("caddy.listen_ip must be an IP address") from exc
+        if droplet_public_ipv4 and caddy["listen_ip"] != str(droplet_public_ipv4):
+            raise ValueError("droplet Caddy ingress must bind to deployment.public_ipv4")
         for field, default in (("http_port", 80), ("https_port", 443)):
             port = caddy.get(field, default)
             if not isinstance(port, int) or isinstance(port, bool) or not 1 <= port <= 65535:
@@ -298,6 +379,41 @@ def validate_config(config: dict):
                 raise ValueError("Caddy proxy_routes require an explicit external Docker network")
         if not any(not is_adopted(instance) for instance in instances):
             raise ValueError("Caddy requires at least one managed Headscale instance")
+        if caddy_crowdsec_enabled(config):
+            for field in ("api_url", "bouncer_api_key_path"):
+                if field == "api_url" and crowdsec.get(field) is None and crowdsec.get("enabled"):
+                    continue
+                if not isinstance(crowdsec.get(field), str) or not crowdsec[field].strip():
+                    raise ValueError(f"Caddy CrowdSec integration requires crowdsec.{field}")
+            api_url = crowdsec.get("api_url") or "http://crowdsec:8080"
+            try:
+                parsed_api = urlsplit(api_url)
+                api_hostname = parsed_api.hostname
+                try:
+                    ipaddress.ip_address(api_hostname)
+                    valid_api_hostname = True
+                except (TypeError, ValueError):
+                    valid_api_hostname = bool(
+                        api_hostname
+                        and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", api_hostname)
+                    )
+                valid_api_url = (
+                    parsed_api.scheme in ("http", "https") and valid_api_hostname
+                    and not parsed_api.username and not parsed_api.password
+                    and parsed_api.path in ("", "/") and not parsed_api.query
+                    and not parsed_api.fragment
+                    and (parsed_api.port is None or 1 <= parsed_api.port <= 65535)
+                )
+            except (TypeError, ValueError):
+                valid_api_url = False
+            if not valid_api_url:
+                raise ValueError("crowdsec.api_url must be an HTTP(S) origin")
+            if not isinstance(caddy.get("log_dir"), str) or not caddy["log_dir"].strip():
+                raise ValueError("Caddy CrowdSec integration requires caddy.log_dir")
+            if crowdsec.get("enabled") and not crowdsec.get("timezone"):
+                raise ValueError("managed CrowdSec requires crowdsec.timezone")
+            if crowdsec.get("enabled") and crowdsec.get("externally_managed"):
+                raise ValueError("choose managed or externally managed CrowdSec, not both")
 
     seen_ids = set()
     seen_ports = set()
@@ -314,6 +430,7 @@ def validate_config(config: dict):
             )
         if (
             crowdsec.get("required_for_public_hosts")
+            and not caddy.get("enabled")
             and management_mode == "managed"
             and instance.get("publish_web_port", False)
         ):
@@ -527,6 +644,13 @@ def ensure_caddy_config(config: dict, project_dir: Path):
     caddy = config.get("caddy", {})
     if not caddy.get("enabled"):
         return
+    if caddy_crowdsec_enabled(config):
+        log_dir = Path(caddy["log_dir"])
+        log_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        os.chmod(log_dir, 0o700)
+        access_log = log_dir / "access.log"
+        access_log.touch(exist_ok=True)
+        os.chmod(access_log, 0o600)
     config_dir = Path(caddy.get("config_dir", project_dir / "caddy"))
     config_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(config_dir, 0o700)
@@ -537,6 +661,30 @@ def ensure_caddy_config(config: dict, project_dir: Path):
     os.chmod(temporary, 0o600)
     os.replace(temporary, caddyfile)
     print(f"✓ Generated {caddyfile}")
+
+
+def ensure_crowdsec_config(config: dict, project_dir: Path):
+    """Write Swarmsail's Caddy log acquisition when managed CrowdSec is enabled."""
+    crowdsec = config.get("crowdsec", {})
+    caddy = config.get("caddy", {})
+    if not crowdsec.get("enabled") or not caddy.get("enabled"):
+        return
+    config_dir = Path(crowdsec.get("config_dir", project_dir / "crowdsec" / "conf"))
+    acquisition_dir = config_dir / "acquis.d"
+    acquisition_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.chmod(acquisition_dir, 0o700)
+    acquisition_file = acquisition_dir / "swarmsail-caddy.yaml"
+    content = (
+        "filenames:\n"
+        "  - /var/log/caddy/*.log\n"
+        "labels:\n"
+        "  type: caddy\n"
+    )
+    temporary = acquisition_file.with_name(f".{acquisition_file.name}.tmp")
+    temporary.write_text(content, encoding="utf-8")
+    os.chmod(temporary, 0o600)
+    os.replace(temporary, acquisition_file)
+    print(f"✓ Generated {acquisition_file}")
 
 
 def generate_command(config_file: str = "instances.json", output_file=None):
@@ -567,6 +715,7 @@ def generate_command(config_file: str = "instances.json", output_file=None):
 
     ensure_headscale_configs(config, config_path.parent)
     ensure_caddy_config(config, config_path.parent)
+    ensure_crowdsec_config(config, config_path.parent)
     compose = generate_compose(config)
     save_compose(compose, str(output_path))
 

@@ -38,7 +38,7 @@ class ProvisionSubscriberTests(unittest.TestCase):
             eligibility="trial", eligible_until=EXPIRES,
             server_url="https://headscale-test.example.test",
             base_domain="tailnet-test.example.test", data_root=str(root / "data"),
-            apply=False, new_private=False,
+            apply=False,
         )
 
     def tearDown(self):
@@ -84,22 +84,12 @@ class ProvisionSubscriberTests(unittest.TestCase):
             plan(updated, ACCOUNT, "subscription", EXPIRES,
                  "https://different.example.test", self.args.base_domain, self.args.data_root)
 
-    def test_new_private_requires_shared_predecessor_and_new_instance(self):
+    def test_account_can_reserve_multiple_independent_active_tailnets(self):
         self.args.apply = True
         first = run(self.args)
-        self.args.new_private = True
         self.args.server_url = "https://headscale-next.example.test"
         self.args.base_domain = "tailnet-next.example.test"
         self.args.apply = False
-        with self.assertRaisesRegex(ValueError, "shared predecessor"):
-            run(self.args)
-        store = Store(self.database)
-        with store.connect() as db:
-            old = db.execute(
-                "SELECT organization_id FROM subscriber_tailnets WHERE account_id=? AND active=1",
-                (ACCOUNT,),
-            ).fetchone()
-        store.enable_sharing(old["organization_id"])
         preview = run(self.args)
         self.assertNotEqual(preview["instance_id"], first["instance_id"])
         self.args.apply = True
@@ -108,12 +98,17 @@ class ProvisionSubscriberTests(unittest.TestCase):
         self.assertEqual(run(self.args)["action"], "already_reserved")
         saved = json.loads(self.config_path.read_text())
         self.assertEqual(len(saved["headscale"]["instances"]), 3)
-        with store.connect() as db:
+        state = Store(self.database).state(saved["headscale"]["instances"])
+        self.assertEqual(
+            [organization["mode"] for organization in state["organizations"]],
+            ["isolated", "isolated"],
+        )
+        with Store(self.database).connect() as db:
             rows = db.execute(
                 "SELECT generation, active FROM subscriber_tailnets WHERE account_id=? ORDER BY generation",
                 (ACCOUNT,),
             ).fetchall()
-        self.assertEqual([(row["generation"], row["active"]) for row in rows], [(1, 0), (2, 1)])
+        self.assertEqual([(row["generation"], row["active"]) for row in rows], [(1, 1), (2, 1)])
 
 
 if __name__ == "__main__":

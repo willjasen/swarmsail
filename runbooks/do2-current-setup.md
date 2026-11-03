@@ -44,6 +44,92 @@ Observed host-level facts:
 - DNS records for Swarmsail names must point directly to the hosting server;
   do not enable DNS proxying.
 
+## Live inventory snapshot (2026-10-20)
+
+This read-only SSH inventory supersedes the older resource and container
+observations above; it is a snapshot, not a guarantee of current state:
+
+- SSH access succeeded as `root@do2.risk-mermaid.ts.net`.
+- Docker, Resilio Sync, and Tailscale systemd services were active.
+- Compose projects were `headscale` (`/opt/headscale/docker-compose.yml`),
+  `swarmsail-managed` (`/opt/swarmsail/current/docker-compose.managed.yml`),
+  and the release-named Swarmsail control-plane project
+  (`/opt/swarmsail/current/compose.swarmsail.yml`, project
+  `20260902t043000z-value-only-fade`).
+- `/opt/swarmsail/current` now resolves to
+  `/opt/swarmsail/releases/20261020T0317Z-crew-navigation-links`. The healthy
+  `swarmsail:local` container runs image
+  `c23bb58df7f20609db73c3f77598b8ed37f23fa1734fe34176b08882fba895bc`.
+  This immutable release was copied from
+  `20261020T0313Z-crew-navigation`, then only `swarmsail_web.py` was replaced
+  from the checkout (SHA-256
+  `74c5fd62db10436b71a63c60f5eb45598ad460aacc32285df7702677047e11fb`).
+  The `swarmsail:rollback-20261020T0317Z-crew-navigation-links` image,
+  previous releases, and earlier rollback images remain available. A
+  verified SQLite backup is at
+  `/opt/swarmsail/backups/swarmsail-20261020T0317Z-crew-navigation-links.db`
+  (SHA-256
+  `7a2ee983ff8a4ebf4602cfd46c1a4080c93297e9cf72569917e3bdce613be887`);
+  `PRAGMA integrity_check` returned `ok`. No SQLite schema migration was
+  needed. The active release mounts its `instances.json` read-only,
+  persistent data at `/opt/swarmsail/data`, and the Docker socket read/write.
+  The Docker socket mount grants the control plane substantial host-level
+  control; preserve access restrictions around the UI and its Docker network.
+  `swarmsail:rollback-dark-default-20261020t022000z` preserves the preceding
+  sky-blue release with system-preference default.
+  `swarmsail:rollback-sky-blue-20261020t021000z` preserves the previous
+  parchment/forest design.
+  Rollback image `swarmsail:rollback-dashboard-20261020t014500z` preserves the
+  pre-redesign image.
+- The 2026-10-20 Captain-console release added Captain, Crew, matey, and Mast
+  terminology, per-Crew matey creation and device enrollment, and
+  confirmation-gated matey/device removal. The follow-up
+  `crew-navigation-links` release adds a persistent left navigation rail, a Crew
+  selector on both the console and CrowdSec page, separate setup/access
+  policy/inventory/security destinations, and a matey filter for Crew devices.
+  Local health, dashboard markup, CrowdSec markup, `/api/state`, and a Crew
+  detail route were verified. From a tailnet-connected client, HTTPS
+  `/healthz`, `/`, and `/crowdsec` were verified with the new navigation and
+  device-filter markup. Browser interaction confirmed that page links from a
+  Crew detail return to the selected dashboard page, and the Mateys table's
+  **Devices** action filters the Crew device list; **All mateys** restores the
+  complete list. The Headscale, NPM Plus, and CrowdSec container IDs remained
+  respectively `c1a5644c3c72`, `41fd6260d934`, `781a23cac5f4`; both Headscale
+  containers and both named services remained running. No
+  `cloudflared` container was present in the Docker inventory. The update
+  recreated only `swarmsail`; no other service, Docker network, or Tailscale
+  Serve route was changed.
+- `headscale-resicom` was running `headscale/headscale:latest`, with TCP
+  8080 published as host port 8081 on all IPv4 and IPv6 interfaces and UDP
+  3478 published on all interfaces. `headscale-nerdhirn` used a
+  digest-qualified image reference and published UDP 3478 as host port 3479
+  on all interfaces. Both containers reported the same image ID during this
+  inventory, and both reported Headscale v0.27.0. The `latest` tag is
+  mutable; record the resolved digest and intended version before upgrades.
+  Confirm the intended exposure of the ResiCom TCP listener and both STUN
+  listeners before changing these bindings; they are broader than
+  loopback-only.
+- NPM Plus and CrowdSec were healthy/running. NPM Plus published 80/443 on
+  all interfaces and its admin port as `127.0.0.1:8181`; CrowdSec's API was
+  bound to `127.0.0.1:7422`. Tailscale Serve reported the NPM admin path as
+  tailnet-only and also reported a separate tailnet-only listener on port
+  8888 forwarding to `localhost:8888`; confirm the owner and intended use of
+  that additional listener before changing it. Swarmsail is now served at
+  `https://<do2-tailscale-hostname>/` on tailnet-only HTTPS port 443, proxied
+  to `http://127.0.0.1:8787`; this route was verified from an authorized
+  tailnet client on 2026-10-19.
+- The root filesystem was 78% used (6.8 GiB of 8.7 GiB, about 2.0 GiB free)
+  and inode use was 14%. Docker reported about 904 MiB of images and 44 MiB
+  of build cache. Continue treating disk capacity as a maintenance concern.
+
+This snapshot confirms container health and local deployment state only. It
+does not establish external DNS correctness or Headscale enrollment. The
+tailnet-only Tailscale Serve route was subsequently verified from an
+authorized client: `https://<do2-tailscale-hostname>/` returned the Swarmsail
+UI and `/healthz` returned `{"status": "ok"}`. This does not imply public
+internet exposure; verify split-horizon routing and direct, non-proxied DNS
+separately if a public hostname is introduced.
+
 ## First-response inventory
 
 Use the local SSH alias or an approved address. These commands are read-only:
@@ -171,16 +257,145 @@ integration functions and mounts the selected release’s `instances.json`
 read-only. A legacy `swarmsail.service` also exists, but was disabled and
 inactive at capture time.
 
+The UI is exposed to the tailnet using Tailscale Serve on HTTPS port 443.
+Clients must be connected to the tailnet, and the tailnet policy must allow
+TCP 443 to this host. The current client policy did not allow the custom Serve
+ports 81, 8443, or 8888, so use the default HTTPS URL without a port suffix.
+The backend process currently listens on `0.0.0.0:8787`; Serve proxies to
+loopback, but this does not by itself prevent direct access to port 8787 from
+other networks. Confirm the host/cloud firewall and intended NPM upstream
+before restricting that listener.
+
+#### Swarmsail-only release and SQLite migration
+
+Use an immutable release directory and build the Swarmsail image from that
+release. The active `compose.swarmsail.yml` contains only the `swarmsail`
+service. Do not use `swarmsail_deploy.py apply` or a whole-project
+`docker compose up`: its managed Headscale project is separate and may
+recreate Headscale services. Do not stop or recreate Headscale, NPM Plus,
+CrowdSec, cloudflared, Docker networks, or Tailscale Serve routes.
+
+The Crew/matey administration release adds no SQLite tables or columns. Keep
+using `/opt/swarmsail/data/swarmsail.db` without a schema migration. Before
+replacing the control-plane container, create and verify a SQLite-aware
+backup; do not `cp` only the live database file while WAL is active.
+
+From the source checkout, choose a unique lowercase release ID, for example
+`<release-id>`, and copy the current release on `do2`:
+
+```sh
+HOST='root@do2.risk-mermaid.ts.net'
+RELEASE='<release-id>'
+PREVIOUS="$(ssh -o BatchMode=yes "$HOST" 'readlink -f /opt/swarmsail/current')"
+ssh -o BatchMode=yes "$HOST" \
+  "mkdir -p '/opt/swarmsail/releases/$RELEASE' && cp -a '$PREVIOUS/.' '/opt/swarmsail/releases/$RELEASE/'"
+scp swarmsail_web.py "$HOST:/opt/swarmsail/releases/$RELEASE/swarmsail_web.py"
+```
+
+On `do2`, use Python's SQLite backup API and verify the resulting database:
+
+```sh
+RELEASE='<release-id>'
+BACKUP="/opt/swarmsail/backups/swarmsail-${RELEASE}.db"
+mkdir -p /opt/swarmsail/backups
+python3 - "$BACKUP" <<'PY'
+import sqlite3
+import sys
+
+source = sqlite3.connect("/opt/swarmsail/data/swarmsail.db")
+backup = sqlite3.connect(sys.argv[1])
+source.backup(backup)
+assert backup.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+backup.close()
+source.close()
+PY
+```
+
+Validate the release and available disk before building. Save the current
+image under a unique rollback tag, build only `swarmsail:local`, then
+recreate only the Swarmsail service without dependencies:
+
+```sh
+RELEASE='<release-id>'
+PROJECT='20260902t043000z-value-only-fade'
+RELEASE_DIR="/opt/swarmsail/releases/${RELEASE}"
+docker compose -p "$PROJECT" -f "$RELEASE_DIR/compose.swarmsail.yml" config --quiet
+df -h /
+docker tag swarmsail:local "swarmsail:rollback-${RELEASE}"
+docker build -t swarmsail:local "$RELEASE_DIR"
+docker compose -p "$PROJECT" -f "$RELEASE_DIR/compose.swarmsail.yml" \
+  up -d --no-deps --force-recreate swarmsail
+docker inspect --format '{{.State.Health.Status}}' swarmsail
+curl -fsS http://127.0.0.1:8787/healthz
+```
+
+Run the symlink commands only after the new container is healthy and the UI/API
+checks pass. Preserve the old release, rollback image, and database backup
+until the observation period ends. If rollback is needed, retag the retained
+image as `swarmsail:local`, recreate only the Swarmsail service from the
+previous release's Compose file, and restore the previous release symlink.
+This application-only update does not restore deleted Headscale users or
+nodes; those require a separate, verified Headscale data recovery.
+
+```sh
+ln -s "$RELEASE_DIR" "/opt/swarmsail/current.$RELEASE"
+mv -Tf "/opt/swarmsail/current.$RELEASE" /opt/swarmsail/current
+```
+
+For rollback, use the previously recorded release path and its matching image
+tag:
+
+```sh
+PREVIOUS='/opt/swarmsail/releases/<previous-release>'
+docker tag "swarmsail:rollback-${RELEASE}" swarmsail:local
+docker compose -p "$PROJECT" -f "$PREVIOUS/compose.swarmsail.yml" \
+  up -d --no-build --no-deps --force-recreate swarmsail
+ln -s "$PREVIOUS" "/opt/swarmsail/current.rollback.$RELEASE"
+mv -Tf "/opt/swarmsail/current.rollback.$RELEASE" /opt/swarmsail/current
+```
+
+The deployed dashboard uses a persistent left navigation rail with a Crew
+selector, separate setup, access-policy, inventory, and security destinations,
+and a matey filter on each Crew's device table. The navigation is available on
+both the Captain's console and CrowdSec page. The UI retains its light
+sky-blue palette, coordinated dark mode, and responsive layout. Dark mode is
+the default for first-time dashboard and CrowdSec page visitors; an explicitly
+saved theme choice in browser local storage still takes precedence.
+
 ```sh
 readlink -f /opt/swarmsail/current
 docker inspect --format '{{json .Mounts}}' swarmsail
 docker inspect --format '{{json .State.Health}}' swarmsail
 docker logs --tail=200 swarmsail
 docker exec swarmsail sh -c 'wget -qO- http://${SWARMSAIL_HOST:-127.0.0.1}:${SWARMSAIL_PORT:-8787}/healthz'
+tailscale serve status
+tailscale serve --bg --https=443 http://127.0.0.1:8787
+curl -fsS https://<do2-tailscale-hostname>/healthz
 ```
 
 Verify the rendered UI/API and the inventory refresh, not only the container
 health status. Keep database backups before release changes.
+Open `https://<do2-tailscale-hostname>/` in a browser on a tailnet-connected
+client. To remove only this route, run
+`tailscale serve --https=443 off` on `do2`; this leaves the other Serve routes
+intact.
+
+To roll back the UI-only update, restore the saved image tag, recreate only
+the Swarmsail control-plane service from the retained release, then restore
+the release symlink:
+
+```sh
+docker tag swarmsail:rollback-dark-default-20261020t022000z swarmsail:local
+docker compose -p 20260902t043000z-value-only-fade \
+  -f /opt/swarmsail/releases/20261020T021000Z-dashboard-sky-blue/compose.swarmsail.yml \
+  up -d --no-build --force-recreate swarmsail
+docker inspect --format '{{.State.Health.Status}}' swarmsail
+ln -s /opt/swarmsail/releases/20261020T021000Z-dashboard-sky-blue /opt/swarmsail/current.rollback
+mv -Tf /opt/swarmsail/current.rollback /opt/swarmsail/current
+```
+
+Remove `swarmsail:rollback-dark-default-20261020t022000z` only after the new UI has
+passed its observation period and rollback is no longer needed.
 
 ### NPM Plus and CrowdSec
 

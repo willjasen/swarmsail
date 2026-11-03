@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Local Swarmsail control plane for organizations, devices, and sharing intent."""
+"""Local Swarmsail control plane for Crews, devices, and sharing intent."""
 
 import argparse
 import ipaddress
@@ -70,8 +70,6 @@ CREATE TABLE IF NOT EXISTS subscriber_tailnets (
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(account_id, generation)
 );
-CREATE UNIQUE INDEX IF NOT EXISTS one_active_subscriber_tailnet
-ON subscriber_tailnets(account_id) WHERE active = 1;
 CREATE TRIGGER IF NOT EXISTS subscriber_tailnet_identity_immutable
 BEFORE UPDATE OF account_id, generation, organization_id, headscale_instance
 ON subscriber_tailnets
@@ -136,6 +134,9 @@ class Store:
         self.path = str(path)
         with self.connect() as db:
             db.executescript(SCHEMA)
+            # Earlier builds allowed only one active tailnet per account.
+            # Keep existing rows intact while allowing independent tailnets.
+            db.execute("DROP INDEX IF EXISTS one_active_subscriber_tailnet")
             columns = {row[1] for row in db.execute("PRAGMA table_info(devices)")}
             migrations = {
                 "source": "TEXT NOT NULL DEFAULT 'manual'",
@@ -200,7 +201,7 @@ class Store:
             "acl_rules": acl_rules,
             "headscale_instances": [public_instance(item) for item in instances],
             "sharing_note": (
-                "Planned shares describe desired policy. Only collaborative organizations "
+                "Planned shares describe desired policy. Only collaborative Crews "
                 "can participate; a future Headscale adapter must apply them."
             ),
         }
@@ -213,7 +214,7 @@ class Store:
             None,
         )
         if organization is None:
-            raise InputError("organization does not exist", HTTPStatus.NOT_FOUND)
+            raise InputError("Crew does not exist", HTTPStatus.NOT_FOUND)
         instance_id = organization.get("headscale_instance")
         instance = next(
             (item for item in instances if str(item.get("id")) == str(instance_id)),
@@ -323,7 +324,7 @@ class Store:
             raise InputError("mode must be collaborative or isolated")
         instance = optional_text(data.get("headscale_instance"))
         if mode == "isolated" and not instance:
-            raise InputError("isolated organizations require a headscale_instance")
+            raise InputError("isolated Crews require a Mast")
         with self.connect() as db:
             cursor = db.execute(
                 "INSERT INTO organizations(name, mode, headscale_instance) VALUES (?, ?, ?)",
@@ -347,7 +348,7 @@ class Store:
             return self._one(db, "SELECT * FROM organizations WHERE id=?", organization_id)
 
     def link_subscriber_tailnet(self, account_id, instance_id, instances):
-        """Bind a configured generation, preserving shared predecessors."""
+        """Bind one configured isolated tailnet without deactivating its siblings."""
         try:
             account_id = str(uuid.UUID(str(account_id)))
         except (ValueError, TypeError, AttributeError) as exc:
@@ -372,20 +373,12 @@ class Store:
                 if existing["account_id"] != account_id or existing["generation"] != generation:
                     raise InputError("Headscale instance is already assigned", HTTPStatus.CONFLICT)
                 return dict(existing)
-            active = db.execute(
-                """SELECT st.*, o.mode FROM subscriber_tailnets st
-                   JOIN organizations o ON o.id=st.organization_id
-                   WHERE st.account_id=? AND st.active=1""",
-                (account_id,),
+            generation_owner = db.execute(
+                "SELECT headscale_instance FROM subscriber_tailnets WHERE account_id=? AND generation=?",
+                (account_id, generation),
             ).fetchone()
-            if active:
-                if active["mode"] != "collaborative" or generation != active["generation"] + 1:
-                    raise InputError(
-                        "a new private tailnet requires a shared predecessor and next generation",
-                        HTTPStatus.CONFLICT,
-                    )
-            elif generation != 1:
-                raise InputError("first subscriber tailnet must be generation 1")
+            if generation_owner:
+                raise InputError("subscriber generation is already assigned", HTTPStatus.CONFLICT)
             organization = db.execute(
                 "SELECT id, mode FROM organizations WHERE headscale_instance=?",
                 (instance_id,),
@@ -405,8 +398,6 @@ class Store:
                     (name, instance_id),
                 )
                 organization_id = cursor.lastrowid
-            if active:
-                db.execute("UPDATE subscriber_tailnets SET active=0 WHERE id=?", (active["id"],))
             cursor = db.execute(
                 """INSERT INTO subscriber_tailnets
                    (account_id, generation, organization_id, headscale_instance)
@@ -426,20 +417,48 @@ class Store:
             )
             return self._one(db, "SELECT * FROM devices WHERE id=?", cursor.lastrowid)
 
+    def get_device(self, organization_id, device_id):
+        with self.connect() as db:
+            row = db.execute(
+                "SELECT * FROM devices WHERE id=? AND organization_id=?",
+                (device_id, organization_id),
+            ).fetchone()
+            if row is None:
+                raise InputError("device does not exist in this Crew", HTTPStatus.NOT_FOUND)
+            return dict(row)
+
+    def delete_device(self, organization_id, device_id):
+        with self.connect() as db:
+            cursor = db.execute(
+                "DELETE FROM devices WHERE id=? AND organization_id=?",
+                (device_id, organization_id),
+            )
+            if cursor.rowcount != 1:
+                raise InputError("device does not exist in this Crew", HTTPStatus.NOT_FOUND)
+
+    def delete_headscale_devices(self, organization_id, user_name):
+        with self.connect() as db:
+            cursor = db.execute(
+                """DELETE FROM devices
+                   WHERE organization_id=? AND source='headscale' AND user_name=?""",
+                (organization_id, user_name),
+            )
+            return cursor.rowcount
+
     def create_connection(self, data):
         first = required_id(data, "organization_a_id")
         second = required_id(data, "organization_b_id")
         if first == second:
-            raise InputError("an organization cannot connect to itself")
+            raise InputError("a Crew cannot connect to itself")
         first, second = sorted((first, second))
         with self.connect() as db:
             rows = db.execute(
                 "SELECT id, mode FROM organizations WHERE id IN (?, ?)", (first, second)
             ).fetchall()
             if len(rows) != 2:
-                raise InputError("both organizations must exist")
+                raise InputError("both Crews must exist")
             if any(row["mode"] == "isolated" for row in rows):
-                raise InputError("isolated organizations cannot be connected")
+                raise InputError("isolated Crews cannot be connected")
             cursor = db.execute(
                 "INSERT INTO connections(organization_a_id, organization_b_id) VALUES (?, ?)",
                 (first, second),
@@ -466,7 +485,7 @@ class Store:
             if row["organization_id"] == target_id:
                 raise InputError("a device is already available to its owning organization")
             if row["owner_mode"] == "isolated" or row["target_mode"] == "isolated":
-                raise InputError("isolated organizations cannot create or receive device shares")
+                raise InputError("isolated Crews cannot create or receive device shares")
             pair = sorted((row["organization_id"], target_id))
             connected = db.execute(
                 """SELECT 1 FROM connections
@@ -474,7 +493,7 @@ class Store:
                 pair,
             ).fetchone()
             if not connected:
-                raise InputError("organizations must be connected before devices can be shared")
+                raise InputError("Crews must be connected before devices can be shared")
             cursor = db.execute(
                 """INSERT INTO shares(device_id, target_organization_id, permission)
                    VALUES (?, ?, ?)""",
@@ -510,16 +529,16 @@ class Store:
                 (source_id, device_id),
             ).fetchone()
             if not row:
-                raise InputError("source organization or destination device does not exist")
+                raise InputError("source Crew or destination device does not exist")
             if source_id != row["destination_id"]:
                 if row["source_mode"] == "isolated" or row["destination_mode"] == "isolated":
-                    raise InputError("isolated organizations cannot have cross-organization ACLs")
+                    raise InputError("isolated Crews cannot have cross-Crew ACLs")
                 pair = sorted((source_id, row["destination_id"]))
                 if not db.execute(
                     """SELECT 1 FROM connections
                        WHERE organization_a_id=? AND organization_b_id=?""", pair
                 ).fetchone():
-                    raise InputError("organizations must be connected before adding an ACL")
+                    raise InputError("Crews must be connected before adding an ACL")
             cursor = db.execute(
                 """INSERT INTO acl_rules
                    (source_organization_id, destination_device_id, protocol, ports)
@@ -635,14 +654,14 @@ class AppServer(ThreadingHTTPServer):
         instance = next((item for item in self.instances()
                          if str(item.get("id")) == str(instance_id)), None)
         if not instance:
-            raise InputError("organization has no dedicated tailnet")
+            raise InputError("Crew has no dedicated Mast")
         try:
             user_id = int(data.get("user_id"))
         except (TypeError, ValueError) as exc:
-            raise InputError("select a valid device owner") from exc
+            raise InputError("select a valid matey") from exc
         users = self.inventory_users(instance_id)
         if user_id not in {item.get("id") for item in users}:
-            raise InputError("selected owner does not belong to this tailnet")
+            raise InputError("selected matey does not belong to this Mast")
         helper = os.environ.get(
             "SWARMSAIL_REGISTRATION_HELPER",
             "/opt/swarmsail/current/create_preauthkey.py",
@@ -666,7 +685,7 @@ class AppServer(ThreadingHTTPServer):
     def create_headscale_user(self, organization, data):
         instance_id = organization.get("headscale_instance")
         if not any(str(item.get("id")) == str(instance_id) for item in self.instances()):
-            raise InputError("organization has no dedicated tailnet")
+            raise InputError("Crew has no dedicated Mast")
         name = str(data.get("name") or "").strip()
         helper = os.environ.get(
             "SWARMSAIL_USER_HELPER", "/app/create_headscale_user.py"
@@ -691,6 +710,150 @@ class AppServer(ThreadingHTTPServer):
             self.write_inventory_cache()
         return user
 
+    def headscale_instance(self, organization):
+        instance_id = organization.get("headscale_instance")
+        instance = next(
+            (item for item in self.instances()
+             if str(item.get("id")) == str(instance_id)),
+            None,
+        )
+        if not instance:
+            raise InputError("Crew has no dedicated Mast")
+        return instance
+
+    def headscale_command(self, organization, *arguments):
+        instance = self.headscale_instance(organization)
+        instance_id = str(instance["id"])
+        service = str(instance.get("service_name", f"headscale-{instance_id}"))
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", service):
+            raise InputError("configured Mast service name is invalid", HTTPStatus.INTERNAL_SERVER_ERROR)
+        try:
+            return subprocess.run(
+                ["docker", "exec", service, "headscale", *arguments],
+                check=True, capture_output=True, text=True, timeout=15,
+            ).stdout
+        except (subprocess.SubprocessError, OSError) as exc:
+            raise InputError("Mast rejected the management request", HTTPStatus.BAD_GATEWAY) from exc
+
+    def headscale_records(self, organization, *arguments):
+        try:
+            result = json.loads(self.headscale_command(
+                organization, *arguments, "--output", "json"
+            ))
+        except json.JSONDecodeError as exc:
+            raise InputError("Mast returned invalid management data", HTTPStatus.BAD_GATEWAY) from exc
+        if result is None:
+            return []
+        if not isinstance(result, list) or not all(
+            isinstance(item, dict) for item in result
+        ):
+            raise InputError("Mast returned invalid management data", HTTPStatus.BAD_GATEWAY)
+        return result
+
+    def update_inventory_after_removal(self, organization, user=None, node_ids=()):
+        instance_id = str(organization.get("headscale_instance"))
+        for tailnet in self.inventory_cache:
+            if str(tailnet.get("instance_id")) != instance_id:
+                continue
+            if user:
+                tailnet["users"] = [
+                    item for item in tailnet.get("users", [])
+                    if str(item.get("id")) != str(user["id"])
+                ]
+            removed = {str(node_id) for node_id in node_ids}
+            if user:
+                removed.update(
+                    str(node.get("id")) for node in tailnet.get("nodes", [])
+                    if node.get("user_name") == user["name"]
+                )
+            tailnet["nodes"] = [
+                node for node in tailnet.get("nodes", [])
+                if str(node.get("id")) not in removed
+            ]
+            try:
+                self.write_inventory_cache()
+            except OSError as exc:
+                raise InputError(
+                    "Mast removal succeeded, but the local inventory could not be refreshed",
+                    HTTPStatus.INTERNAL_SERVER_ERROR,
+                ) from exc
+            return
+
+    def delete_headscale_user(self, organization, data):
+        if data.get("confirm") is not True:
+            raise InputError("confirm the matey removal before continuing")
+        user_id = required_id(data, "user_id")
+        users = self.headscale_records(organization, "users", "list")
+        user = next(
+            (item for item in users if str(item.get("id")) == str(user_id)),
+            None,
+        )
+        if user is None or not isinstance(user.get("name"), str) or not user["name"]:
+            raise InputError("matey does not exist on this Mast", HTTPStatus.NOT_FOUND)
+        nodes = self.headscale_records(organization, "nodes", "list")
+        owned_nodes = [
+            node for node in nodes
+            if isinstance(node.get("user"), dict)
+            and str(node["user"].get("id")) == str(user_id)
+        ]
+        expected_count = data.get("device_count")
+        if (
+            isinstance(expected_count, bool)
+            or not isinstance(expected_count, int)
+            or expected_count < 0
+            or expected_count != len(owned_nodes)
+            or data.get("user_name") != user["name"]
+        ):
+            raise InputError(
+                "matey or device inventory changed; refresh the Crew and confirm again",
+                HTTPStatus.CONFLICT,
+            )
+        self.headscale_command(
+            organization, "users", "destroy", "--identifier", str(user_id), "--force"
+        )
+        self.store.delete_headscale_devices(organization["id"], str(user["name"]))
+        self.update_inventory_after_removal(
+            organization, user=user,
+            node_ids=[node.get("id") for node in owned_nodes],
+        )
+        return {"deleted": True, "devices_removed": len(owned_nodes)}
+
+    def delete_device(self, organization, data):
+        if data.get("confirm") is not True:
+            raise InputError("confirm the device removal before continuing")
+        device_id = required_id(data, "device_id")
+        device = self.store.get_device(organization["id"], device_id)
+        if data.get("device_name") != device["name"]:
+            raise InputError(
+                "device inventory changed; refresh the Crew and confirm again",
+                HTTPStatus.CONFLICT,
+            )
+        node_id = device.get("headscale_node_id")
+        if node_id:
+            if not str(node_id).isdigit() or int(node_id) < 1:
+                raise InputError("linked device has an invalid Mast node ID", HTTPStatus.CONFLICT)
+            nodes = self.headscale_records(organization, "nodes", "list")
+            node = next(
+                (item for item in nodes if str(item.get("id")) == str(node_id)),
+                None,
+            )
+            if node is None:
+                raise InputError("linked device is no longer present on this Mast", HTTPStatus.CONFLICT)
+            node_name = node.get("given_name") or node.get("name") or f"node-{node_id}"
+            valid_names = {node_name, f"{node_name} #{node_id}"}
+            if device["name"] not in valid_names:
+                raise InputError(
+                    "device name changed on the Mast; refresh the Crew and confirm again",
+                    HTTPStatus.CONFLICT,
+                )
+            self.headscale_command(
+                organization, "nodes", "delete", "--identifier", str(node_id), "--force"
+            )
+        self.store.delete_device(organization["id"], device_id)
+        if node_id:
+            self.update_inventory_after_removal(organization, node_ids=(node_id,))
+        return {"deleted": True, "revoked": bool(node_id)}
+
     def write_inventory_cache(self):
         if not self.node_inventory:
             return
@@ -704,9 +867,9 @@ class AppServer(ThreadingHTTPServer):
         try:
             user_id = int(data.get("user_id"))
         except (TypeError, ValueError) as exc:
-            raise InputError("select a valid device owner") from exc
+            raise InputError("select a valid matey") from exc
         if user_id not in {item.get("id") for item in self.inventory_users(instance_id)}:
-            raise InputError("selected owner does not belong to this tailnet")
+            raise InputError("selected matey does not belong to this Mast")
         key = str(data.get("key") or "").strip()
         helper = os.environ.get(
             "SWARMSAIL_NODE_REGISTRATION_HELPER", "/app/register_pending_node.py"
@@ -764,12 +927,16 @@ class AppServer(ThreadingHTTPServer):
     def security_status(self):
         config = load_config(str(self.config_path))
         crowdsec = config.get("crowdsec", {})
+        if config.get("caddy", {}).get("enabled"):
+            http_path = "Caddy → CrowdSec bouncer → Headscale"
+        else:
+            http_path = "NPM Plus → CrowdSec bouncer + AppSec → Headscale"
         return {
             "crowdsec_required": bool(crowdsec.get("required_for_public_hosts")),
             "crowdsec_management": (
                 "external" if crowdsec.get("externally_managed") else "swarmsail"
             ),
-            "http_path": "NPM Plus → CrowdSec bouncer + AppSec → Headscale",
+            "http_path": http_path,
             "stun_note": "STUN uses direct UDP and is not HTTP/AppSec traffic.",
         }
 
@@ -970,21 +1137,40 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_DELETE(self):
         path = urlparse(self.path).path
-        if path.startswith("/api/acls/"):
-            try:
+        user_removal = re.fullmatch(r"/api/organizations/(\d+)/users/(\d+)", path)
+        device_removal = re.fullmatch(r"/api/organizations/(\d+)/devices/(\d+)", path)
+        try:
+            if user_removal or device_removal:
+                data = self.read_json()
+                self.server.refresh_inventory()
+                organization_id = int(
+                    (user_removal or device_removal).group(1)
+                )
+                detail = self.server.store.organization_state(
+                    organization_id, self.server.instances()
+                )
+                if user_removal:
+                    data["user_id"] = user_removal.group(2)
+                    result = self.server.delete_headscale_user(detail["organization"], data)
+                else:
+                    data["device_id"] = device_removal.group(2)
+                    result = self.server.delete_device(detail["organization"], data)
+                return self.send_json(result)
+            if path.startswith("/api/acls/"):
                 self.server.store.delete_acl_rule(int(path.rsplit("/", 1)[1]))
                 return self.send_json({"deleted": True})
-            except (ValueError, InputError) as exc:
-                status = exc.status if isinstance(exc, InputError) else HTTPStatus.BAD_REQUEST
-                return self.send_json({"error": str(exc)}, status)
-        if path.startswith("/api/shares/"):
-            try:
+            if path.startswith("/api/shares/"):
                 self.server.store.delete_share(int(path.rsplit("/", 1)[1]))
                 return self.send_json({"deleted": True})
-            except (ValueError, InputError) as exc:
-                status = exc.status if isinstance(exc, InputError) else HTTPStatus.BAD_REQUEST
-                return self.send_json({"error": str(exc)}, status)
-        self.send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
+            return self.send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
+        except (ValueError, InputError) as exc:
+            status = exc.status if isinstance(exc, InputError) else HTTPStatus.BAD_REQUEST
+            return self.send_json({"error": str(exc)}, status)
+        except sqlite3.IntegrityError as exc:
+            return self.send_json(
+                {"error": "record conflicts with existing data", "detail": str(exc)},
+                HTTPStatus.CONFLICT,
+            )
 
     def read_json(self):
         try:
@@ -1119,17 +1305,21 @@ CROWDSEC_PAGE = r"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">
 <title>CrowdSec · Swarmsail</title><style>
 :root{font-family:Inter,system-ui,sans-serif;color-scheme:light;--page:#f4f7fb;--text:#172033;--muted:#596579;--card:#fff;--border:#dce3ef;--pill:#e5edfa;--shadow:#2030500b;--good:#067647;--warn:#b54708;--fresh:#175cd3}:root[data-theme="dark"]{color-scheme:dark;--page:#0d1420;--text:#edf3fc;--muted:#aab7c9;--card:#151f2e;--border:#2b3a50;--pill:#253750;--shadow:#00000045;--good:#75e0a7;--warn:#fdb022;--fresh:#53b1fd}*{box-sizing:border-box}body{max-width:1100px;margin:auto;padding:32px;background:var(--page);color:var(--text);min-height:100vh}.topbar{display:flex;align-items:center;justify-content:space-between;gap:16px}.actions{display:flex;gap:8px}.button,a.button{width:auto;background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:7px;padding:8px 12px;text-decoration:none;cursor:pointer}.note{color:var(--muted)}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:18px;margin-top:18px}.card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:18px;box-shadow:0 5px 18px var(--shadow)}.wide{grid-column:1/-1}.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}.stat{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:14px}.stat strong{display:block;font-size:26px}.table-wrap{overflow:auto}table{width:100%;border-collapse:collapse;text-align:left}th,td{padding:11px;border-bottom:1px solid var(--border);vertical-align:top}th{font-size:12px;text-transform:uppercase;color:var(--muted)}.pill{display:inline-block;font-size:12px;padding:3px 8px;border-radius:99px;background:var(--pill)}.running{color:var(--good)}.warning,.error{color:var(--warn)}ul{padding-left:20px}li{margin:8px 0}.data-changed{animation:data-changed 2.2s ease-out}@keyframes data-changed{0%{color:var(--fresh);text-shadow:0 0 12px color-mix(in srgb,var(--fresh) 65%,transparent)}100%{color:inherit;text-shadow:none}}@media(prefers-reduced-motion:reduce){.data-changed{animation:none}}
-</style><script>document.documentElement.dataset.theme=localStorage.getItem('swarmsail-theme')||(matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light')</script></head><body>
-<div class="topbar"><div><h1>CrowdSec</h1><p class="note">Read-only security activity from this server’s local CrowdSec service.</p></div><div class="actions"><a class="button" href="/">Swarmsail</a><button class="button" id="theme" onclick="toggleTheme()">Dark mode</button></div></div>
+</style><style>body{max-width:none;margin:0;padding:24px clamp(20px,4vw,56px)}.app-layout{display:grid;grid-template-columns:220px minmax(0,1fr);gap:clamp(24px,4vw,58px);max-width:1540px;margin:0 auto}.app-sidebar{align-self:start;position:sticky;top:22px}.app-sidebar .crew-picker{margin-bottom:16px}.app-sidebar .crew-picker summary{cursor:pointer;font-weight:700}.app-sidebar .crew-picker ul{padding:0;list-style:none;max-height:260px;overflow:auto}.app-sidebar .crew-picker li{margin:4px 0}.app-sidebar .crew-picker a,.app-sidebar .side-nav a{display:block;padding:9px 11px;border-radius:8px;color:var(--muted);text-decoration:none}.app-sidebar .crew-picker a:hover,.app-sidebar .side-nav a:hover,.app-sidebar .side-nav a[aria-current=page]{background:var(--pill);color:var(--text)}.app-sidebar .crew-picker small{display:block}.app-sidebar .side-nav{display:grid;gap:5px}.app-content{min-width:0}.app-content>.topbar{padding:0}.app-content>.grid{margin-top:18px}@media(max-width:900px){.app-layout{grid-template-columns:1fr;gap:12px}.app-sidebar{position:static}.app-sidebar .crew-picker ul{display:flex;gap:6px;max-height:none;overflow-x:auto}.app-sidebar .crew-picker li{flex:none}.app-sidebar .side-nav{display:flex;gap:6px;overflow-x:auto}.app-sidebar .side-nav a{white-space:nowrap;border:1px solid var(--border)}}
+</style><script>document.documentElement.dataset.theme=localStorage.getItem('swarmsail-theme')||'dark'</script></head><body>
+<div class="app-layout"><aside class="app-sidebar" aria-label="Captain navigation"><details class="crew-picker" open><summary>Crews</summary><ul id="crowdsec-crews"><li>Loading Crews…</li></ul></details><nav class="side-nav" aria-label="Pages"><a href="/#setup">Set up</a><a href="/#policy">Access policy</a><a href="/#inventory">Inventory</a><a href="/crowdsec" aria-current="page">Security</a></nav></aside><main class="app-content">
+<div class="topbar"><div><h1>CrowdSec</h1><p class="note">Read-only security activity from this server’s local CrowdSec service.</p></div><div class="actions"><button class="button" id="theme" onclick="toggleTheme()">Dark mode</button></div></div>
 <p id="status" class="note" aria-live="polite">Loading local data…</p><p id="error" class="error"></p>
 <div class="stats"><div class="stat"><strong id="appsec-blocked" data-live-value>—</strong>AppSec blocks</div><div class="stat"><strong id="appsec-processed" data-live-value>—</strong>AppSec requests</div><div class="stat"><strong id="bouncer-dropped" data-live-value>—</strong>Bouncer drops</div><div class="stat"><strong id="decision-count" data-live-value>—</strong>Active decisions shown</div></div>
 <div class="grid"><section class="card"><h2>Service</h2><dl id="service"></dl></section><section class="card"><h2>24-hour log sample</h2><dl id="logs"></dl><p class="note">Counts use the latest 500 local service-log lines.</p></section><section class="card wide"><h2>Log acquisition</h2><div class="table-wrap"><table><thead><tr><th>Source</th><th>Read</th><th>Parsed</th><th>Unparsed</th><th>Whitelisted</th></tr></thead><tbody id="acquisition"></tbody></table></div></section><section class="card"><h2>Top alert scenarios</h2><ol id="alerts"></ol></section><section class="card"><h2>Recent service issues</h2><ul id="issues"></ul></section><section class="card wide"><h2>Active decisions</h2><p class="note">Visitor addresses are reduced to network prefixes. No raw IP addresses or log files are exposed.</p><div class="table-wrap"><table><thead><tr><th>Scenario</th><th>Action</th><th>Origin</th><th>Target network</th><th>Remaining</th></tr></thead><tbody id="decisions"></tbody></table></div></section></div>
+</main></div>
 <script>
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])),num=n=>Number(n||0).toLocaleString();let loading=false;
 function themeLabel(){theme.textContent=document.documentElement.dataset.theme==='dark'?'Light mode':'Dark mode'}function toggleTheme(){let next=document.documentElement.dataset.theme==='dark'?'light':'dark';document.documentElement.dataset.theme=next;localStorage.setItem('swarmsail-theme',next);themeLabel()}
+async function loadCrews(){try{let response=await fetch('/api/state'),data=await response.json();if(!response.ok)throw Error(data.error||'Crew list unavailable');crowdsecCrews.innerHTML=data.organizations.map(o=>`<li><a href="/organizations/${o.id}">${esc(o.name)}<small>${o.headscale_instance?'Mast '+esc(o.headscale_instance):'Shared Mast'}</small></a></li>`).join('')||'<li>No Crews yet</li>'}catch(e){crowdsecCrews.innerHTML=`<li class="error">${esc(e.message)}</li>`}}
 async function load(){if(loading||document.hidden)return;loading=true;try{let response=await fetch('/api/crowdsec'),data=await response.json();if(!response.ok)throw Error(data.error||'CrowdSec data unavailable');error.textContent='';status.textContent='Updated '+new Date(data.generated_at).toLocaleString();appsecBlocked.textContent=num(data.appsec.blocked);appsecProcessed.textContent=num(data.appsec.processed);bouncerDropped.textContent=num(data.bouncer.dropped);decisionCount.textContent=num(data.active_decisions.length);service.innerHTML=`<dt>Status</dt><dd><span class="pill ${data.container.status==='running'?'running':'warning'}">${esc(data.container.status)}</span></dd><dt>Container</dt><dd>${esc(data.container.name)}</dd><dt>Started</dt><dd>${esc(new Date(data.container.started_at).toLocaleString())}</dd>`;logs.innerHTML=`<dt>Sampled</dt><dd>${num(data.log_window.sampled_lines)} lines</dd><dt>Info</dt><dd>${num(data.log_window.levels.info)}</dd><dt>Warnings</dt><dd>${num(data.log_window.levels.warning)}</dd><dt>Errors</dt><dd>${num(data.log_window.levels.error)}</dd>`;acquisition.innerHTML=data.acquisition.map(x=>`<tr><td>${esc(x.source)}</td><td>${num(x.read)}</td><td>${num(x.parsed)}</td><td>${num(x.unparsed)}</td><td>${num(x.whitelisted)}</td></tr>`).join('')||'<tr><td colspan="5">No acquisition metrics.</td></tr>';alerts.innerHTML=data.top_alerts.map(x=>`<li>${esc(x.scenario)} <span class="pill">${num(x.count)}</span></li>`).join('')||'<li>No alerts reported.</li>';issues.innerHTML=data.recent_issues.map(x=>`<li><span class="pill ${esc(x.level)}">${esc(x.level)}</span> ${esc(x.message)}</li>`).join('')||'<li>No warnings or errors in the sampled lines.</li>';decisions.innerHTML=data.active_decisions.map(x=>`<tr><td>${esc(x.scenario)}</td><td><span class="pill">${esc(x.type)}</span></td><td>${esc(x.origin)}</td><td>${esc(x.target)}</td><td>${esc(x.duration)}</td></tr>`).join('')||'<tr><td colspan="5">No active decisions.</td></tr>'}catch(e){error.textContent=e.message;status.textContent='Refresh delayed'}finally{loading=false}}
 function watchChanges(){let values=new Map([...document.querySelectorAll('[data-live-value]')].map(node=>[node,node.textContent]));let observer=new MutationObserver(records=>{for(let record of records){let node=record.target.nodeType===3?record.target.parentElement:record.target,target=node&&node.closest('[data-live-value]');if(!target)continue;let next=target.textContent,previous=values.get(target);values.set(target,next);if(previous===undefined||previous===next)continue;target.classList.remove('data-changed');void target.offsetWidth;target.classList.add('data-changed');setTimeout(()=>target.classList.remove('data-changed'),2300)}});document.querySelectorAll('[data-live-value]').forEach(node=>observer.observe(node,{subtree:true,childList:true,characterData:true}))}
-const theme=document.getElementById('theme'),error=document.getElementById('error'),status=document.getElementById('status'),appsecBlocked=document.getElementById('appsec-blocked'),appsecProcessed=document.getElementById('appsec-processed'),bouncerDropped=document.getElementById('bouncer-dropped'),decisionCount=document.getElementById('decision-count'),service=document.getElementById('service'),logs=document.getElementById('logs'),acquisition=document.getElementById('acquisition'),alerts=document.getElementById('alerts'),issues=document.getElementById('issues'),decisions=document.getElementById('decisions');themeLabel();load().then(watchChanges);setInterval(load,15000);window.addEventListener('focus',load);document.addEventListener('visibilitychange',load);
+const theme=document.getElementById('theme'),error=document.getElementById('error'),status=document.getElementById('status'),crowdsecCrews=document.getElementById('crowdsec-crews'),appsecBlocked=document.getElementById('appsec-blocked'),appsecProcessed=document.getElementById('appsec-processed'),bouncerDropped=document.getElementById('bouncer-dropped'),decisionCount=document.getElementById('decision-count'),service=document.getElementById('service'),logs=document.getElementById('logs'),acquisition=document.getElementById('acquisition'),alerts=document.getElementById('alerts'),issues=document.getElementById('issues'),decisions=document.getElementById('decisions');themeLabel();loadCrews();load().then(watchChanges);setInterval(load,15000);window.addEventListener('focus',load);document.addEventListener('visibilitychange',load);
 </script></body></html>"""
 
 
@@ -1144,52 +1334,119 @@ HEALTH_PAGE = r"""<!doctype html>
 
 DASHBOARD = r"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">
-<title>Swarmsail</title><style>
-:root{font-family:Inter,system-ui,sans-serif;color-scheme:light;--page:#f4f7fb;--text:#172033;--muted:#596579;--card:#fff;--border:#dce3ef;--field:#fff;--pill:#e5edfa;--isolated:#ffe9c7;--shadow:#2030500b;--danger:#b42318;--online-bg:#dcfae6;--online-text:#067647;--offline-bg:#fee4e2;--offline-text:#b42318;--fresh:#175cd3}:root[data-theme="dark"]{color-scheme:dark;--page:#0d1420;--text:#edf3fc;--muted:#aab7c9;--card:#151f2e;--border:#2b3a50;--field:#101a28;--pill:#253750;--isolated:#5a421b;--shadow:#00000045;--danger:#ff8a80;--online-bg:#123f2b;--online-text:#75e0a7;--offline-bg:#4a2020;--offline-text:#fda29b;--fresh:#53b1fd}*{transition:background-color .15s ease,border-color .15s ease,color .15s ease}body{max-width:1180px;margin:0 auto;padding:clamp(18px,4vw,40px);background:var(--page);color:var(--text);min-height:100vh}.topbar{display:flex;align-items:center;justify-content:space-between;gap:18px}.topbar h1{margin:0}.topbar a,.org-link{color:var(--text);text-decoration:none}.org-link{font-weight:700}.back-link{display:inline-block;margin:0 0 16px;color:#175cd3}.theme-toggle{width:auto;background:var(--card);color:var(--text);border:1px solid var(--border);padding:8px 12px}h2{font-size:18px;margin:0 0 10px}.note{color:var(--muted)}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px;margin-top:16px}.card{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:20px;box-shadow:0 5px 18px var(--shadow)}.wide{grid-column:1/-1}.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:12px;margin:18px 0}.stat{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:14px}.stat strong{display:block;font-size:24px}.table-wrap{overflow-x:auto}table{width:100%;border-collapse:collapse;text-align:left}th,td{padding:11px;border-bottom:1px solid var(--border);vertical-align:top}th{font-size:12px;text-transform:uppercase;color:var(--muted)}input,select,button{box-sizing:border-box;width:100%;padding:10px;margin:5px 0;border:1px solid var(--border);border-radius:7px;background:var(--field);color:var(--text)}button{background:#175cd3;color:white;border:0;font-weight:650;cursor:pointer}.danger{background:#bd2c2c;color:white;width:auto}.pill{font-size:12px;padding:3px 8px;border-radius:99px;background:var(--pill);white-space:nowrap}.status-online{background:var(--online-bg);color:var(--online-text)}.status-offline{background:var(--offline-bg);color:var(--offline-text)}.isolated{background:var(--isolated)}ul{padding-left:20px}li{margin:9px 0}.error{color:var(--danger);min-height:24px}[hidden]{display:none!important}.section-heading{display:flex;align-items:baseline;justify-content:space-between;gap:12px}.overview-stats .stat span{display:block;color:var(--muted);font-size:13px;margin-top:4px}.overview-stats .stat strong{font-size:28px}.manage{margin-top:26px;border:1px solid var(--border);border-radius:14px;background:var(--card);box-shadow:0 5px 18px var(--shadow)}.manage>summary{cursor:pointer;list-style:none;padding:18px 20px;font-weight:700}.manage>summary::-webkit-details-marker{display:none}.manage>summary:after{content:'＋';float:right;color:var(--muted)}.manage[open]>summary:after{content:'−'}.manage-content{padding:0 20px 20px}.manage-content .grid{margin-top:0}.data-changed{animation:data-changed 2.2s ease-out}@keyframes data-changed{0%{color:var(--fresh);text-shadow:0 0 12px color-mix(in srgb,var(--fresh) 65%,transparent)}100%{color:inherit;text-shadow:none}}@media(max-width:640px){.topbar{align-items:flex-start}.manage-content{padding:0 14px 14px}}@media(prefers-reduced-motion:reduce){.data-changed{animation:none}}
-</style><script>const preferredTheme=localStorage.getItem('swarmsail-theme')||(matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light');document.documentElement.dataset.theme=preferredTheme;</script></head><body><div class="topbar"><h1><a href="/">Swarmsail</a></h1><div><a class="back-link" href="/crowdsec">CrowdSec</a> <button id="theme-toggle" class="theme-toggle" onclick="toggleTheme()" aria-label="Switch color theme">Dark mode</button></div></div><p class="note">Organizations, isolated tailnets, devices, and sharing intent. <span id="refresh-status" aria-live="polite"></span></p><div id="error" class="error"></div>
-<main id="dashboard-view">
-<section class="card"><div class="section-heading"><h2>Overview</h2></div><div class="stats overview-stats"><div class="stat"><strong id="overview-org-count" data-live-value>0</strong><span>Organizations</span></div><div class="stat"><strong id="overview-device-count" data-live-value>0</strong><span>Devices</span></div><div class="stat"><strong id="overview-online-count" data-live-value>0</strong><span>Online</span></div><div class="stat"><strong id="overview-plan-count" data-live-value>0</strong><span>Plans not applied</span></div></div></section>
-<div class="grid"><section class="card"><h2>Organizations</h2><p class="note">Open an organization to see its tailnet and ACL policy.</p><ul id="orgs"></ul></section><section class="card"><h2>Devices</h2><ul id="devices"></ul></section></div>
-<details class="manage"><summary>Manage organizations, devices, and access</summary><div class="manage-content"><div class="grid"><section class="card"><h2>New organization</h2><input id="org-name" placeholder="Organization name"><select id="org-mode"><option value="collaborative">Collaborative</option><option value="isolated">Totally isolated tailnet</option></select><select id="org-instance"><option value="">Shared control plane</option></select><button onclick="addOrg()">Create organization</button></section>
-<section class="card"><h2>Connect organizations</h2><select id="connection-a"></select><select id="connection-b"></select><button onclick="addConnection()">Plan connection</button></section>
-<section class="card"><h2>New device</h2><select id="device-org"></select><input id="device-name" placeholder="Device name"><input id="device-node" placeholder="Headscale node ID (optional)"><button onclick="addDevice()">Add device</button></section>
-<section class="card"><h2>Share device</h2><select id="share-device"></select><select id="share-target"></select><select id="share-permission"><option value="connect">Connect</option><option value="manage">Manage</option></select><button onclick="addShare()">Plan share</button></section></div>
-<div class="grid" style="margin-top:18px"><section class="card"><h2>ACL rule</h2><select id="acl-source"></select><select id="acl-device"></select><select id="acl-protocol"><option value="any">Any protocol</option><option value="tcp">TCP</option><option value="udp">UDP</option><option value="icmp">ICMP</option></select><input id="acl-ports" value="*" placeholder="Ports: *, 443, or 80,443,8000-8100"><button onclick="addAcl()">Plan ACL rule</button></section>
+<title>Swarmsail · Captain’s console</title><style>
+:root{font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;color-scheme:light;--page:#edf7fd;--text:#18344b;--muted:#607b90;--card:#ffffff;--border:#d3e7f4;--field:#f9fdff;--pill:#e4f2fb;--isolated:#dceffc;--shadow:#194b6810;--accent:#1682bb;--accent-hover:#116b9b;--accent-soft:#e2f2fb;--danger:#a33e2f;--online-bg:#e2f4eb;--online-text:#276749;--offline-bg:#f4e2dc;--offline-text:#a33e2f;--fresh:#087eb3}
+:root[data-theme="dark"]{color-scheme:dark;--page:#101f2b;--text:#e9f5fc;--muted:#a3bfd0;--card:#192c3a;--border:#30495a;--field:#142634;--pill:#254255;--isolated:#244a64;--shadow:#00000030;--accent:#80c8ec;--accent-hover:#a2daf4;--accent-soft:#203b4e;--danger:#f0a18f;--online-bg:#25483c;--online-text:#b8e8d0;--offline-bg:#4b302b;--offline-text:#f0a18f;--fresh:#89d2f2}
+*{box-sizing:border-box}html{scroll-behavior:smooth;scroll-padding-top:24px}body{margin:0;background:var(--page);color:var(--text);min-height:100vh;line-height:1.5}a{color:inherit}.topbar{display:flex;align-items:center;justify-content:space-between;gap:18px;max-width:1540px;margin:0 auto;padding:24px clamp(20px,4vw,56px) 10px}.topbar h1{margin:0;font:700 27px/1.1 Georgia,"Times New Roman",serif;letter-spacing:-.04em}.topbar h1 a{color:var(--text);text-decoration:none}.topbar h1 a:before{content:"S";display:inline-grid;place-items:center;width:34px;height:34px;margin-right:10px;border-radius:11px;background:var(--accent);color:var(--page);font:700 19px/1 ui-sans-serif,system-ui;vertical-align:-3px}.topbar>div{display:flex;align-items:center;gap:14px}.back-link{display:inline-block;color:var(--accent);font-weight:650;text-decoration:none}.theme-toggle{width:auto!important;background:transparent!important;color:var(--text)!important;border:1px solid var(--border)!important;padding:8px 12px!important}h2{font:700 20px/1.2 Georgia,"Times New Roman",serif;letter-spacing:-.02em;margin:0 0 12px}.note{color:var(--muted)}body>.note{max-width:1540px;margin:0 auto;padding:2px clamp(20px,4vw,56px) 14px}#error{max-width:1540px;margin:0 auto;padding:0 clamp(20px,4vw,56px)}.dashboard-layout{display:grid;grid-template-columns:220px minmax(0,1fr);gap:clamp(24px,4vw,58px);max-width:1540px;margin:0 auto;padding:20px clamp(20px,4vw,56px) 64px}.sidebar{align-self:start;position:sticky;top:22px;padding:18px 0}.sidebar-label,.eyebrow{font-size:11px;font-weight:750;letter-spacing:.13em;text-transform:uppercase;color:var(--muted)}.sidebar-label{margin:0 0 12px 12px}.side-nav{display:grid;gap:5px}.side-nav a{display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:9px;color:var(--muted);text-decoration:none;font-size:14px;font-weight:600}.side-nav a:before{content:"";width:7px;height:7px;border:1px solid currentColor;border-radius:50%}.side-nav a:hover,.side-nav a:focus-visible{background:var(--accent-soft);color:var(--accent)}.sidebar-foot{margin:26px 12px 0;padding-top:17px;border-top:1px solid var(--border);font-size:12px;color:var(--muted)}.dashboard-content{min-width:0}.content-section{margin:0 0 36px;scroll-margin-top:22px}.section-heading{display:flex;align-items:end;justify-content:space-between;gap:18px;margin:0 0 18px}.section-heading h2{font-size:28px;margin:4px 0 0}.section-heading p{margin:5px 0 0;color:var(--muted)}.form-grid,.inventory-grid,.detail-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.card{min-width:0;background:var(--card);border:1px solid var(--border);border-radius:13px;padding:22px;box-shadow:0 8px 24px var(--shadow)}.card h2{font-size:19px}.card .note{font-size:13px}.card>p:first-of-type{margin-top:0}.form-grid .card{border-top:3px solid var(--accent)}.form-grid .card:nth-child(2){border-top-color:#bb7950}.form-grid .card:nth-child(3){border-top-color:#788b67}.form-grid .card:nth-child(4){border-top-color:#b29862}.inventory-grid .card:first-child{grid-row:span 2}.inventory-grid .card ul{padding:0;list-style:none}.inventory-grid .card li{padding:10px 0;margin:0;border-bottom:1px solid var(--border);overflow-wrap:anywhere}.inventory-grid .card li:last-child{border-bottom:0}.inventory-grid .card li:only-child{color:var(--muted);font-style:italic}.wide{grid-column:1/-1}.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin:18px 0}.stat{background:var(--accent-soft);border:1px solid var(--border);border-radius:10px;padding:14px;color:var(--muted);font-size:13px}.stat strong{display:block;color:var(--text);font-size:26px;line-height:1.2}.table-wrap{overflow-x:auto}table{width:100%;border-collapse:collapse;text-align:left}th,td{padding:11px;border-bottom:1px solid var(--border);vertical-align:top}th{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}label{display:block;margin:11px 0 3px;color:var(--muted);font-size:12px;font-weight:700}input,select,button{width:100%;padding:11px 12px;margin:4px 0 9px;border:1px solid var(--border);border-radius:8px;background:var(--field);color:var(--text);font:inherit}input::placeholder{color:var(--muted);opacity:.8}input:focus,select:focus,button:focus-visible,a:focus-visible{outline:3px solid color-mix(in srgb,var(--accent) 35%,transparent);outline-offset:2px}button{background:var(--accent);color:#fffdf8;border-color:var(--accent);font-weight:700;cursor:pointer;transition:background-color .15s ease,transform .15s ease}button:hover:not(:disabled){background:var(--accent-hover);transform:translateY(-1px)}button:disabled{opacity:.5;cursor:not-allowed}.danger{background:var(--danger);border-color:var(--danger);color:#fff;width:auto;padding:5px 9px;font-size:12px}.pill{display:inline-block;font-size:11px;font-weight:700;padding:4px 9px;border-radius:999px;background:var(--pill);white-space:nowrap}.status-online{background:var(--online-bg);color:var(--online-text)}.status-offline{background:var(--offline-bg);color:var(--offline-text)}.isolated{background:var(--isolated)}dl{display:grid;grid-template-columns:minmax(110px,.7fr) 1.3fr;gap:8px 14px}dt{color:var(--muted);font-size:13px}dd{margin:0;overflow-wrap:anywhere}.error{color:var(--danger);min-height:24px}[hidden]{display:none!important}.data-changed{animation:data-changed 2.2s ease-out}@keyframes data-changed{0%{color:var(--fresh);text-shadow:0 0 12px color-mix(in srgb,var(--fresh) 55%,transparent)}100%{color:inherit;text-shadow:none}}@media(max-width:900px){.dashboard-layout{grid-template-columns:1fr;gap:8px;padding-top:8px}.sidebar{position:static;padding:8px 0}.sidebar-label,.sidebar-foot{display:none}.side-nav{display:flex;gap:6px;overflow-x:auto;padding:3px 0 9px}.side-nav a{flex:none;padding:9px 11px;background:var(--card);border:1px solid var(--border)}.inventory-grid .card:first-child{grid-row:auto}}@media(max-width:560px){.topbar{padding-top:17px}.topbar h1{font-size:23px}.topbar h1 a:before{width:30px;height:30px}.topbar>div{gap:8px}.theme-toggle{padding:7px 9px!important;font-size:12px}.back-link{font-size:13px}.form-grid,.inventory-grid,.detail-grid{grid-template-columns:1fr}.section-heading{display:block}.section-heading h2{font-size:25px}.card{padding:18px}.wide{grid-column:auto}#organization-view{padding:0 20px 36px}#organization-view>.card{margin-top:14px!important}.stats{grid-template-columns:repeat(2,minmax(0,1fr))}dl{grid-template-columns:1fr;gap:2px}dd{margin-bottom:10px}}@media(prefers-reduced-motion:reduce){*,html{scroll-behavior:auto!important;transition:none!important}.data-changed{animation:none}}
+</style><style>.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}#organization-view{max-width:1200px;margin:0 auto;padding:8px clamp(20px,4vw,56px) 56px}.form-grid .card:nth-child(2){border-top-color:#61b6dc}.form-grid .card:nth-child(3){border-top-color:#3c9dc8}.form-grid .card:nth-child(4){border-top-color:#92cbe1}.crew-picker{margin:0 0 12px;padding:0 12px}.crew-picker summary{cursor:pointer;color:var(--text);font-size:14px;font-weight:750;list-style:none}.crew-picker summary::-webkit-details-marker{display:none}.crew-picker summary:after{content:"＋";float:right;color:var(--muted)}.crew-picker[open] summary:after{content:"−"}.crew-picker ul{display:grid;gap:4px;max-height:260px;overflow:auto;margin:10px 0 0;padding:0;list-style:none}.crew-picker li a{display:block;padding:8px 10px;border-radius:8px;color:var(--muted);font-size:13px;text-decoration:none;overflow-wrap:anywhere}.crew-picker li a:hover,.crew-picker li a:focus-visible,.crew-picker li a[aria-current=page]{background:var(--accent-soft);color:var(--accent)}.crew-picker li a small{display:block;color:var(--muted);font-size:11px}.crew-picker li.empty{padding:8px 10px;color:var(--muted);font-size:12px}.side-nav{margin-top:20px}.side-nav a[aria-current=page]{background:var(--accent-soft);color:var(--accent)}.side-nav a[href="/crowdsec"]:before{border-radius:2px}#crew-devices-section>label{max-width:360px}#crew-devices-section>select{max-width:360px}@media(max-width:900px){.crew-picker{padding:0}.crew-picker summary{padding:9px 11px;background:var(--card);border:1px solid var(--border);border-radius:9px}.crew-picker ul{display:flex;max-height:none;overflow-x:auto;padding:5px 0}.crew-picker li{flex:none}.crew-picker li a{background:var(--card);border:1px solid var(--border)}.side-nav{margin-top:8px}}@media(max-width:560px){#organization-view{padding:0 20px 36px}}</style><script>const preferredTheme=localStorage.getItem('swarmsail-theme')||'dark';document.documentElement.dataset.theme=preferredTheme;</script></head><body><div class="topbar"><h1><a href="/">Swarmsail</a></h1><div><a class="back-link" href="/crowdsec">CrowdSec</a> <button id="theme-toggle" class="theme-toggle" onclick="toggleTheme()" aria-label="Switch color theme">Dark mode</button></div></div><p class="note">Captain’s console for Crews, Masts, mateys, devices, and sharing intent. <span id="refresh-status" aria-live="polite"></span></p><div id="error" class="error"></div>
+<main class="dashboard-layout">
+<aside class="sidebar" aria-label="Captain navigation">
+<details class="crew-picker" open><summary>Crews</summary><ul id="sidebar-crews"></ul></details>
+<nav class="side-nav" aria-label="Pages"><a href="/#setup" data-page="setup">Set up</a><a href="/#policy" data-page="policy">Access policy</a><a href="/#inventory" data-page="inventory">Inventory</a><a href="/crowdsec">Security</a></nav>
+<p class="sidebar-foot">Changes here model intent. Planned access rules are not applied to Headscale yet.</p></aside>
+<div class="dashboard-content">
+<div id="dashboard-view">
+<section class="card overview-card" aria-label="Network overview"><div class="section-heading"><div><span class="eyebrow">At a glance</span><h2>Overview</h2></div></div><div class="stats"><div class="stat"><strong id="overview-org-count">0</strong>Crews</div><div class="stat"><strong id="overview-device-count">0</strong>Devices</div><div class="stat"><strong id="overview-online-count">0</strong>Online</div><div class="stat"><strong id="overview-plan-count">0</strong>Plans not applied</div></div></section>
+<section id="setup" class="content-section"><div class="section-heading"><div><span class="eyebrow">Captain’s console</span><h2>Build your network</h2><p>Create Crews, add devices, and define how they connect.</p></div></div>
+<div class="form-grid"><section class="card"><h2>New Crew</h2><label for="org-name">Crew name</label><input id="org-name" placeholder="e.g. Northstar Studio"><label for="org-mode">Network model</label><select id="org-mode"><option value="collaborative">Collaborative</option><option value="isolated">Totally isolated tailnet</option></select><label for="org-instance">Mast</label><select id="org-instance"><option value="">Shared Mast</option></select><button onclick="addOrg()">Create Crew</button></section>
+<section class="card"><h2>Connect Crews</h2><label for="connection-a">First Crew</label><select id="connection-a"></select><label for="connection-b">Second Crew</label><select id="connection-b"></select><button onclick="addConnection()">Plan connection</button></section>
+<section class="card"><h2>Manual device record</h2><p class="note">Adds an inventory entry only; use a Crew’s enrollment controls to connect a real device.</p><label for="device-org">Crew</label><select id="device-org"></select><label for="device-name">Device name</label><input id="device-name" placeholder="e.g. design-macbook"><label for="device-node">Headscale node ID <span class="note">(optional)</span></label><input id="device-node" placeholder="Node ID"><button onclick="addDevice()">Add inventory record</button></section>
+<section class="card"><h2>Share device</h2><label for="share-device">Device</label><select id="share-device"></select><label for="share-target">Target Crew</label><select id="share-target"></select><label for="share-permission">Permission</label><select id="share-permission"><option value="connect">Connect</option><option value="manage">Manage</option></select><button onclick="addShare()">Plan share</button></section></div></section>
+<section id="policy" class="content-section"><div class="section-heading"><div><span class="eyebrow">Guardrails</span><h2>Shape access</h2><p>Keep trust explicit and DNS records direct to their host.</p></div></div>
+<div class="form-grid"><section class="card"><h2>ACL rule</h2><label for="acl-source">Source Crew</label><select id="acl-source"></select><label for="acl-device">Destination device</label><select id="acl-device"></select><label for="acl-protocol">Protocol</label><select id="acl-protocol"><option value="any">Any protocol</option><option value="tcp">TCP</option><option value="udp">UDP</option><option value="icmp">ICMP</option></select><label for="acl-ports">Ports</label><input id="acl-ports" value="*" placeholder="*, 443, or 8000-8100"><button onclick="addAcl()">Plan ACL rule</button></section>
 <section class="card"><h2>Cloudflare DNS</h2><p class="note" id="cloudflare-status"></p><button id="cloudflare-button" onclick="configureDns()">Configure DNS-only record</button></section>
-<section class="card"><h2>Traffic protection</h2><p id="security-path"></p><p class="note" id="security-note"></p></section></div>
-<div class="grid"><section class="card"><h2>Connections</h2><ul id="connections"></ul></section><section class="card"><h2>Shares</h2><p class="note" id="sharing-note"></p><ul id="shares"></ul></section><section class="card"><h2>ACL policy</h2><p class="note">Deny by default. Planned rules do not change Headscale until reconciled.</p><ul id="acls"></ul></section></div></div></details>
-</main>
-<main id="organization-view" hidden>
-<a class="back-link" href="/">← All organizations</a>
-<section class="card"><div class="topbar"><div><h2 id="detail-name"></h2><p class="note" id="detail-summary"></p></div><span class="pill" id="detail-mode"></span></div><div class="stats"><div class="stat"><strong id="detail-user-count" data-live-value>0</strong>Users</div><div class="stat"><strong id="detail-device-count" data-live-value>0</strong>Devices</div><div class="stat"><strong id="detail-online-count" data-live-value>0</strong>Online devices</div><div class="stat"><strong id="detail-acl-count" data-live-value>0</strong>ACL rules</div><div class="stat"><strong id="detail-connection-count" data-live-value>0</strong>Connections</div><div class="stat"><strong id="detail-share-count" data-live-value>0</strong>Shares</div></div></section>
-<section class="card" style="margin-top:18px"><h2>Add a device</h2><p class="note">Choose its owner, then generate a one-time key that expires in one hour.</p><div class="grid"><div><label for="registration-user">Device owner</label><select id="registration-user"></select><button id="registration-button" onclick="createRegistration()">Generate connection command</button></div><div><label for="new-user-name">New owner</label><input id="new-user-name" maxlength="63" placeholder="User name"><button class="theme-toggle" onclick="createHeadscaleUser()">Create owner</button></div></div><div id="registration-result" hidden><p><strong>Run this on the new device:</strong></p><input id="registration-command" readonly><button class="theme-toggle" onclick="copyRegistration()">Copy command</button><p class="note">This key is shown only here. Generate another if it expires or leaves this page.</p></div></section>
+<section class="card"><h2>Traffic protection</h2><p id="security-path"></p><p class="note" id="security-note"></p></section></div></section>
+<section id="inventory" class="content-section"><div class="section-heading"><div><span class="eyebrow">At a glance</span><h2>Crew inventory</h2><p>Open a Crew to inspect its Mast, mateys, devices, and policy.</p></div></div>
+<div class="inventory-grid"><section class="card"><h2>Crews</h2><p class="note">Select a Crew to view its details.</p><ul id="orgs"></ul></section><section class="card"><h2>Connections</h2><ul id="connections"></ul></section><section class="card"><h2>Devices</h2><ul id="devices"></ul></section><section class="card"><h2>Shares</h2><p class="note" id="sharing-note"></p><ul id="shares"></ul></section><section class="card"><h2>ACL policy</h2><p class="note">Deny by default. Planned rules do not change Headscale until reconciled.</p><ul id="acls"></ul></section></div></section>
+</div>
+<div id="organization-view" hidden>
+<a class="back-link" href="/">← All Crews</a>
+<section class="card"><div class="topbar"><div><h2 id="detail-name"></h2><p class="note" id="detail-summary"></p></div><span class="pill" id="detail-mode"></span></div><div class="stats"><div class="stat"><strong id="detail-user-count" data-live-value>0</strong>Mateys</div><div class="stat"><strong id="detail-device-count" data-live-value>0</strong>Devices</div><div class="stat"><strong id="detail-online-count" data-live-value>0</strong>Online devices</div><div class="stat"><strong id="detail-acl-count" data-live-value>0</strong>ACL rules</div><div class="stat"><strong id="detail-connection-count" data-live-value>0</strong>Connections</div><div class="stat"><strong id="detail-share-count" data-live-value>0</strong>Shares</div></div></section>
+<section class="card" style="margin-top:18px"><h2>Enroll a device</h2><p class="note">Choose its matey, then generate a one-time key that expires in one hour.</p><div class="grid"><div><label for="registration-user">Matey</label><select id="registration-user"></select><button id="registration-button" onclick="createRegistration()">Generate connection command</button></div><div><label for="new-user-name">New matey</label><input id="new-user-name" maxlength="63" placeholder="Matey name"><button class="theme-toggle" onclick="createHeadscaleUser()">Create matey</button></div></div><div id="registration-result" hidden><p><strong>Run this on the new device:</strong></p><input id="registration-command" readonly><button class="theme-toggle" onclick="copyRegistration()">Copy command</button><p class="note">This key is shown only here. Generate another if it expires or leaves this page.</p></div></section>
 <section class="card" style="margin-top:18px"><h2>Register a macOS GUI device</h2><p class="note">In Tailscale Settings → Accounts, add this custom control server. Paste the pending node key shown by the client below, then choose its owner above.</p><label for="macos-server-url">Custom control server</label><input id="macos-server-url" readonly><label for="pending-node-key">Pending node key</label><input id="pending-node-key" autocomplete="off" placeholder="Paste the key after --key"><button onclick="registerPendingNode()">Register pending device</button><p class="note" id="pending-node-result"></p></section>
-<div class="grid" style="margin-top:18px"><section class="card"><h2>Tailnet</h2><dl id="detail-tailnet"></dl></section><section class="card"><h2>DNS settings</h2><dl id="detail-dns"></dl><div id="detail-split-dns"></div></section><section class="card"><h2>Trust and sharing</h2><ul id="detail-trust"></ul></section></div>
+<div class="grid" style="margin-top:18px"><section class="card"><h2>Mast and tailnet</h2><dl id="detail-tailnet"></dl></section><section class="card"><h2>DNS settings</h2><dl id="detail-dns"></dl><div id="detail-split-dns"></div></section><section class="card"><h2>Trust and sharing</h2><ul id="detail-trust"></ul></section></div>
 <section class="card" style="margin-top:18px"><h2>Access controls</h2><p><span class="pill">Default: deny</span></p><p class="note" id="detail-policy-status"></p><div class="table-wrap"><table><thead><tr><th>Direction</th><th>Source</th><th>Destination</th><th>Protocol</th><th>Ports</th><th>Status</th></tr></thead><tbody id="detail-acls"></tbody></table></div></section>
-<section class="card" style="margin-top:18px"><h2>Users</h2><div class="table-wrap"><table><thead><tr><th>Name</th><th>Devices</th><th>Online</th><th>User ID</th></tr></thead><tbody id="detail-users"></tbody></table></div></section>
-<section class="card" style="margin-top:18px"><h2>Devices</h2><div class="table-wrap"><table><thead><tr><th>Name</th><th>Owner</th><th>Addresses</th><th>Status</th><th>Last seen</th><th>Node ID</th></tr></thead><tbody id="detail-devices"></tbody></table></div></section>
+<section class="card" style="margin-top:18px"><h2>Mateys</h2><div class="table-wrap"><table><thead><tr><th>Name</th><th>Devices</th><th>Online</th><th>Matey ID</th><th>Actions</th></tr></thead><tbody id="detail-users"></tbody></table></div></section>
+<section id="crew-devices-section" class="card" style="margin-top:18px"><h2>Devices</h2><label for="device-matey-filter">Show devices for</label><select id="device-matey-filter"><option value="">All mateys</option></select><p class="note" id="filtered-device-caption"></p><div class="table-wrap"><table><thead><tr><th>Name</th><th>Matey</th><th>Addresses</th><th>Status</th><th>Last seen</th><th>Node ID</th><th>Actions</th></tr></thead><tbody id="detail-devices"></tbody></table></div></section>
+</div>
+</div>
 </main>
 <script>
 let state={},organizationState=null,loading=false;const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 async function api(path,method='GET',body){let r=await fetch(path,{method,headers:body?{'Content-Type':'application/json'}:{},body:body?JSON.stringify(body):null});let d=await r.json();if(!r.ok)throw Error(d.error||'Request failed');return d}
-async function load(silent=false){if(loading)return;loading=true;try{let match=location.pathname.match(/^\/organizations\/(\d+)$/);if(match){organizationState=await api('/api/organizations/'+match[1]);renderOrganization()}else{state=await api('/api/state');render()}refreshStatus.textContent='Updated '+new Date().toLocaleTimeString();if(silent)error.textContent=''}catch(e){if(!silent)error.textContent=e.message;refreshStatus.textContent='Refresh delayed'}finally{loading=false}}
-function refreshIfIdle(){if(document.hidden)return;let editing=dashboardView&&!dashboardView.hidden&&document.activeElement&&document.activeElement.matches('input,select');if(!editing)load(true)}
+async function load(silent=false){if(loading)return;loading=true;try{let match=location.pathname.match(/^\/organizations\/(\d+)$/);if(match){let results=await Promise.all([api('/api/state'),api('/api/organizations/'+match[1])]);state=results[0];organizationState=results[1];renderOrganization()}else{state=await api('/api/state');organizationState=null;render()}refreshStatus.textContent='Updated '+new Date().toLocaleTimeString();if(silent)error.textContent=''}catch(e){if(!silent)error.textContent=e.message;refreshStatus.textContent='Refresh delayed'}finally{loading=false}}
+function refreshIfIdle(){if(document.hidden)return;let editing=document.activeElement&&document.activeElement.matches('input,select,textarea');if(!editing)load(true)}
 function formatLastSeen(value){if(!value)return 'Never';let date=new Date(value);if(Number.isNaN(date.getTime()))return value;let seconds=Math.round((date.getTime()-Date.now())/1000),absolute=Math.abs(seconds),unit='second',amount=seconds;if(absolute>=86400){unit='day';amount=Math.round(seconds/86400)}else if(absolute>=3600){unit='hour';amount=Math.round(seconds/3600)}else if(absolute>=60){unit='minute';amount=Math.round(seconds/60)}let relative=new Intl.RelativeTimeFormat(undefined,{numeric:'auto'}).format(amount,unit);return `<span title="${esc(date.toLocaleString())}">${esc(relative)}</span>`}
 function options(rows,label){return rows.map(x=>`<option value="${x.id}">${esc(label(x))}</option>`).join('')}
-function render(){dashboardView.hidden=false;organizationView.hidden=true;error.textContent='';let pendingPlans=[...state.connections,...state.shares,...state.acl_rules].filter(item=>item.status!=='applied').length;document.getElementById('overview-org-count').textContent=state.organizations.length;document.getElementById('overview-device-count').textContent=state.devices.length;document.getElementById('overview-online-count').textContent=state.devices.filter(item=>item.online).length;document.getElementById('overview-plan-count').textContent=pendingPlans;let collaborative=state.organizations.filter(o=>o.mode==='collaborative');orgs.innerHTML=state.organizations.map(o=>`<li><a class="org-link" href="/organizations/${o.id}">${esc(o.name)}</a> <span class="pill ${o.mode==='isolated'?'isolated':''}">${o.mode}</span>${o.headscale_instance?' · tailnet '+esc(o.headscale_instance):''}</li>`).join('')||'<li>None yet</li>';connections.innerHTML=state.connections.map(c=>`<li>${esc(c.organization_a_name)} ↔ ${esc(c.organization_b_name)} <span class="pill">${esc(c.status)}</span></li>`).join('')||'<li>None yet</li>';devices.innerHTML=state.devices.map(d=>{let status=d.online?'online':'offline';return `<li>${esc(d.name)} · ${esc(d.organization_name)} <span class="pill status-${status}">${status}</span></li>`}).join('')||'<li>None yet</li>';shares.innerHTML=state.shares.map(s=>`<li>${esc(s.device_name)} → ${esc(s.target_organization_name)} <span class="pill">${esc(s.permission)} · ${esc(s.status)}</span> <button class="danger" onclick="removeShare(${s.id})">Remove</button></li>`).join('')||'<li>None yet</li>';acls.innerHTML=state.acl_rules.map(a=>`<li>${esc(a.source_organization_name)} → ${esc(a.destination_device_name)} (${esc(a.destination_organization_name)}) <span class="pill">${esc(a.protocol)}:${esc(a.ports)} · ${esc(a.status)}</span> <button class="danger" onclick="removeAcl(${a.id})">Remove</button></li>`).join('')||'<li>Deny all cross-organization traffic</li>';sharingNote.textContent=state.sharing_note;deviceOrg.innerHTML=options(state.organizations,o=>o.name);connectionA.innerHTML=options(collaborative,o=>o.name);connectionB.innerHTML=options(collaborative,o=>o.name);shareDevice.innerHTML=options(state.devices,d=>d.name+' · '+d.organization_name);shareTarget.innerHTML=options(collaborative,o=>o.name);aclSource.innerHTML=options(state.organizations,o=>o.name);aclDevice.innerHTML=options(state.devices,d=>d.name+' · '+d.organization_name);orgInstance.innerHTML='<option value="">Shared control plane</option>'+state.headscale_instances.map(i=>`<option value="${esc(i.id)}">Instance ${esc(i.id)} · ${esc(i.server_url||'')}</option>`).join('');cloudflareStatus.textContent=!state.cloudflare.configured?'Set CLOUDFLARE_API_TOKEN in the server environment file':!state.cloudflare.activation_ready?'Token configured; waiting for TLS proxy and CrowdSec verification':`${state.cloudflare.name} → ${state.cloudflare.target} (DNS only)`;cloudflareButton.disabled=!state.cloudflare.configured||!state.cloudflare.activation_ready;securityPath.textContent=state.security.crowdsec_required?'Required: '+state.security.http_path:'CrowdSec protection is optional';securityNote.textContent=state.security.stun_note}
-function renderOrganization(){dashboardView.hidden=true;organizationView.hidden=false;error.textContent='';let d=organizationState,o=d.organization,t=d.tailnet||{},dns=d.dns;detailName.textContent=o.name;detailMode.textContent=o.mode;detailMode.className='pill '+(o.mode==='isolated'?'isolated':'');detailSummary.textContent=o.mode==='isolated'?'Dedicated, totally isolated tailnet':'Collaborative organization with explicit trust and ACLs';detailDeviceCount.textContent=d.devices.length;detailAclCount.textContent=d.acl_rules.length;detailConnectionCount.textContent=d.connections.length;detailShareCount.textContent=d.shares.length;registrationUser.innerHTML=(d.headscale_users||[]).map(u=>`<option value="${esc(u.id)}">${esc(u.name)}</option>`).join('')||'<option value="">No Headscale users found</option>';registrationButton.disabled=!(d.headscale_users||[]).length;detailPolicyStatus.textContent=d.policy_status;detailTailnet.innerHTML=t.id?`<dt>Control server</dt><dd>${esc(t.server_url||'Not set')}</dd><dt>IPv4 space</dt><dd>${esc(t.ipv4_prefix||'Not set')}</dd><dt>Base domain</dt><dd>${esc(t.base_domain||'Not set')}</dd><dt>Management</dt><dd>${esc(t.management_mode||'managed')}</dd><dt>Ingress</dt><dd>${esc(t.security_path||'existing deployment')}</dd>`:'<p class="note">This organization is not assigned to a dedicated Headscale instance.</p>';if(dns){let flag=v=>v===true?'Enabled':v===false?'Disabled':'Unknown';detailDns.innerHTML=`<dt>MagicDNS</dt><dd><span class="pill">${flag(dns.magic_dns)}</span></dd><dt>Tailnet domain</dt><dd>${esc(dns.base_domain||'Not set')}</dd><dt>Override local DNS</dt><dd>${flag(dns.override_local_dns)}</dd><dt>Global resolvers</dt><dd>${(dns.global_nameservers||[]).map(esc).join('<br>')||'None'}</dd><dt>Search domains</dt><dd>${(dns.search_domains||[]).map(esc).join('<br>')||'None'}</dd>`;let routes=Object.entries(dns.split_nameservers||{});detailSplitDns.innerHTML=`<h3>Split DNS routes</h3><ul>${routes.map(([domain,servers])=>`<li><strong>${esc(domain)}</strong> → ${servers.map(esc).join(', ')}</li>`).join('')||'<li>None</li>'}</ul>${(dns.extra_records||[]).length?`<h3>Extra records</h3><ul>${dns.extra_records.map(r=>`<li>${esc(r.name)} ${esc(r.type)} ${esc(r.value)}</li>`).join('')}</ul>`:''}`}else{detailDns.innerHTML='<p class="note">DNS inventory is not available yet.</p>';detailSplitDns.innerHTML=''}detailTrust.innerHTML=d.connections.map(c=>`<li>Connected to ${esc(c.organization_a_id===o.id?c.organization_b_name:c.organization_a_name)} <span class="pill">${esc(c.status)}</span></li>`).concat(d.shares.map(s=>`<li>${esc(s.device_name)}: ${esc(s.owner_organization_id===o.id?'shared with '+s.target_organization_name:'shared into this organization')} <span class="pill">${esc(s.permission)} · ${esc(s.status)}</span></li>`)).join('')||'<li>No organization trust or device shares</li>';detailAcls.innerHTML=d.acl_rules.map(a=>{let direction=a.source_organization_id===o.id?(a.destination_organization_id===o.id?'internal':'outbound'):'inbound';return `<tr><td><span class="pill">${direction}</span></td><td>${esc(a.source_organization_name)}</td><td>${esc(a.destination_device_name)}<br><span class="note">${esc(a.destination_organization_name)}</span></td><td>${esc(a.protocol)}</td><td>${esc(a.ports)}</td><td><span class="pill">${esc(a.status)}</span></td></tr>`}).join('')||'<tr><td colspan="6">No allow rules. Default deny applies.</td></tr>';detailDevices.innerHTML=d.devices.map(x=>{let ips=[];try{ips=JSON.parse(x.ip_addresses||'[]')}catch(_){ips=[]}let status=x.online?'online':'offline';return `<tr><td>${esc(x.name)}</td><td>${esc(x.user_name||'Unknown')}</td><td>${ips.map(esc).join('<br>')||'—'}</td><td><span class="pill status-${status}">${status}</span></td><td>${formatLastSeen(x.last_seen)}</td><td>${esc(x.headscale_node_id||'Not linked')}</td></tr>`}).join('')||'<tr><td colspan="6">No devices recorded for this organization.</td></tr>'}
+function renderSidebar(){let crewId=organizationState&&organizationState.organization?String(organizationState.organization.id):'';sidebarCrews.innerHTML=(state.organizations||[]).map(o=>`<li><a href="/organizations/${o.id}" ${String(o.id)===crewId?'aria-current="page"':''}>${esc(o.name)}<small>${o.headscale_instance?'Mast '+esc(o.headscale_instance):'Shared Mast'}</small></a></li>`).join('')||'<li class="empty">No Crews yet</li>'}
+function showDashboardPage(){if(dashboardView.hidden)return;let page=['setup','policy','inventory'].includes(location.hash.slice(1))?location.hash.slice(1):'setup';dashboardView.querySelectorAll('.content-section').forEach(section=>section.hidden=section.id!==page);document.querySelectorAll('.side-nav [data-page]').forEach(link=>{if(link.dataset.page===page)link.setAttribute('aria-current','page');else link.removeAttribute('aria-current')})}
+function render(){dashboardView.hidden=false;organizationView.hidden=true;organizationState=null;error.textContent='';renderSidebar();showDashboardPage();document.getElementById('overview-org-count').textContent=state.organizations.length;document.getElementById('overview-device-count').textContent=state.devices.length;document.getElementById('overview-online-count').textContent=state.devices.filter(d=>d.online).length;document.getElementById('overview-plan-count').textContent=[...state.connections,...state.shares,...state.acl_rules].filter(x=>x.status!=='applied').length;let collaborative=state.organizations.filter(o=>o.mode==='collaborative');orgs.innerHTML=state.organizations.map(o=>`<li><a class="org-link" href="/organizations/${o.id}">${esc(o.name)}</a> <span class="pill ${o.mode==='isolated'?'isolated':''}">${o.mode}</span>${o.headscale_instance?' · tailnet '+esc(o.headscale_instance):''}</li>`).join('')||'<li>None yet</li>';connections.innerHTML=state.connections.map(c=>`<li>${esc(c.organization_a_name)} ↔ ${esc(c.organization_b_name)} <span class="pill">${esc(c.status)}</span></li>`).join('')||'<li>None yet</li>';devices.innerHTML=state.devices.map(d=>{let status=d.online?'online':'offline';return `<li>${esc(d.name)} · ${esc(d.organization_name)} <span class="pill status-${status}">${status}</span></li>`}).join('')||'<li>None yet</li>';shares.innerHTML=state.shares.map(s=>`<li>${esc(s.device_name)} → ${esc(s.target_organization_name)} <span class="pill">${esc(s.permission)} · ${esc(s.status)}</span> <button class="danger" onclick="removeShare(${s.id})">Remove</button></li>`).join('')||'<li>None yet</li>';acls.innerHTML=state.acl_rules.map(a=>`<li>${esc(a.source_organization_name)} → ${esc(a.destination_device_name)} (${esc(a.destination_organization_name)}) <span class="pill">${esc(a.protocol)}:${esc(a.ports)} · ${esc(a.status)}</span> <button class="danger" onclick="removeAcl(${a.id})">Remove</button></li>`).join('')||'<li>Deny all cross-organization traffic</li>';sharingNote.textContent=state.sharing_note;deviceOrg.innerHTML=options(state.organizations,o=>o.name);connectionA.innerHTML=options(collaborative,o=>o.name);connectionB.innerHTML=options(collaborative,o=>o.name);shareDevice.innerHTML=options(state.devices,d=>d.name+' · '+d.organization_name);shareTarget.innerHTML=options(collaborative,o=>o.name);aclSource.innerHTML=options(state.organizations,o=>o.name);aclDevice.innerHTML=options(state.devices,d=>d.name+' · '+d.organization_name);orgInstance.innerHTML='<option value="">Shared control plane</option>'+state.headscale_instances.map(i=>`<option value="${esc(i.id)}">Instance ${esc(i.id)} · ${esc(i.server_url||'')}</option>`).join('');cloudflareStatus.textContent=!state.cloudflare.configured?'Set CLOUDFLARE_API_TOKEN in the server environment file':!state.cloudflare.activation_ready?'Token configured; waiting for TLS proxy and CrowdSec verification':`${state.cloudflare.name} → ${state.cloudflare.target} (DNS only)`;cloudflareButton.disabled=!state.cloudflare.configured||!state.cloudflare.activation_ready;securityPath.textContent=state.security.crowdsec_required?'Required: '+state.security.http_path:'CrowdSec protection is optional';securityNote.textContent=state.security.stun_note}
+function renderOrganization(){dashboardView.hidden=true;organizationView.hidden=false;error.textContent='';renderSidebar();let d=organizationState,o=d.organization,t=d.tailnet||{},dns=d.dns;detailName.textContent=o.name;detailMode.textContent=o.mode;detailMode.className='pill '+(o.mode==='isolated'?'isolated':'');detailSummary.textContent=o.mode==='isolated'?'Dedicated, totally isolated tailnet':'Collaborative organization with explicit trust and ACLs';detailDeviceCount.textContent=d.devices.length;detailAclCount.textContent=d.acl_rules.length;detailConnectionCount.textContent=d.connections.length;detailShareCount.textContent=d.shares.length;registrationUser.innerHTML=(d.headscale_users||[]).map(u=>`<option value="${esc(u.id)}">${esc(u.name)}</option>`).join('')||'<option value="">No Headscale users found</option>';registrationButton.disabled=!(d.headscale_users||[]).length;detailPolicyStatus.textContent=d.policy_status;detailTailnet.innerHTML=t.id?`<dt>Control server</dt><dd>${esc(t.server_url||'Not set')}</dd><dt>IPv4 space</dt><dd>${esc(t.ipv4_prefix||'Not set')}</dd><dt>Base domain</dt><dd>${esc(t.base_domain||'Not set')}</dd><dt>Management</dt><dd>${esc(t.management_mode||'managed')}</dd><dt>Ingress</dt><dd>${esc(t.security_path||'existing deployment')}</dd>`:'<p class="note">This organization is not assigned to a dedicated Headscale instance.</p>';if(dns){let flag=v=>v===true?'Enabled':v===false?'Disabled':'Unknown';detailDns.innerHTML=`<dt>MagicDNS</dt><dd><span class="pill">${flag(dns.magic_dns)}</span></dd><dt>Tailnet domain</dt><dd>${esc(dns.base_domain||'Not set')}</dd><dt>Override local DNS</dt><dd>${flag(dns.override_local_dns)}</dd><dt>Global resolvers</dt><dd>${(dns.global_nameservers||[]).map(esc).join('<br>')||'None'}</dd><dt>Search domains</dt><dd>${(dns.search_domains||[]).map(esc).join('<br>')||'None'}</dd>`;let routes=Object.entries(dns.split_nameservers||{});detailSplitDns.innerHTML=`<h3>Split DNS routes</h3><ul>${routes.map(([domain,servers])=>`<li><strong>${esc(domain)}</strong> → ${servers.map(esc).join(', ')}</li>`).join('')||'<li>None</li>'}</ul>${(dns.extra_records||[]).length?`<h3>Extra records</h3><ul>${dns.extra_records.map(r=>`<li>${esc(r.name)} ${esc(r.type)} ${esc(r.value)}</li>`).join('')}</ul>`:''}`}else{detailDns.innerHTML='<p class="note">DNS inventory is not available yet.</p>';detailSplitDns.innerHTML=''}detailTrust.innerHTML=d.connections.map(c=>`<li>Connected to ${esc(c.organization_a_id===o.id?c.organization_b_name:c.organization_a_name)} <span class="pill">${esc(c.status)}</span></li>`).concat(d.shares.map(s=>`<li>${esc(s.device_name)}: ${esc(s.owner_organization_id===o.id?'shared with '+s.target_organization_name:'shared into this organization')} <span class="pill">${esc(s.permission)} · ${esc(s.status)}</span></li>`)).join('')||'<li>No organization trust or device shares</li>';detailAcls.innerHTML=d.acl_rules.map(a=>{let direction=a.source_organization_id===o.id?(a.destination_organization_id===o.id?'internal':'outbound'):'inbound';return `<tr><td><span class="pill">${direction}</span></td><td>${esc(a.source_organization_name)}</td><td>${esc(a.destination_device_name)}<br><span class="note">${esc(a.destination_organization_name)}</span></td><td>${esc(a.protocol)}</td><td>${esc(a.ports)}</td><td><span class="pill">${esc(a.status)}</span></td></tr>`}).join('')||'<tr><td colspan="6">No allow rules. Default deny applies.</td></tr>';detailDevices.innerHTML=d.devices.map(x=>{let ips=[];try{ips=JSON.parse(x.ip_addresses||'[]')}catch(_){ips=[]}let status=x.online?'online':'offline';return `<tr><td>${esc(x.name)}</td><td>${esc(x.user_name||'Unknown')}</td><td>${ips.map(esc).join('<br>')||'—'}</td><td><span class="pill status-${status}">${status}</span></td><td>${formatLastSeen(x.last_seen)}</td><td>${esc(x.headscale_node_id||'Not linked')}</td></tr>`}).join('')||'<tr><td colspan="6">No devices recorded for this organization.</td></tr>'}
 const renderOrganizationBase=renderOrganization;
-renderOrganization=function(){renderOrganizationBase();let d=organizationState,users=d.headscale_users||[];document.getElementById('detail-user-count').textContent=users.length;document.getElementById('detail-online-count').textContent=d.devices.filter(x=>x.online).length;document.getElementById('macos-server-url').value=(d.tailnet||{}).server_url||'';document.getElementById('detail-users').innerHTML=users.map(u=>{let owned=d.devices.filter(x=>x.user_name===u.name),online=owned.filter(x=>x.online).length;return `<tr><td>${esc(u.name)}</td><td>${owned.length}</td><td><span class="pill ${online?'status-online':'status-offline'}">${online}</span></td><td>${esc(u.id)}</td></tr>`}).join('')||'<tr><td colspan="4">No users in this tailnet.</td></tr>'}
+renderOrganization=function(){
+  renderOrganizationBase();
+  let d=organizationState,users=d.headscale_users||[];
+  document.getElementById('detail-user-count').textContent=users.length;
+  document.getElementById('detail-online-count').textContent=d.devices.filter(x=>x.online).length;
+  let selectedMatey=deviceMateyFilter.value;
+  deviceMateyFilter.innerHTML='<option value="">All mateys</option>'+users.map(u=>`<option value="${esc(u.id)}">${esc(u.name)}</option>`).join('');
+  deviceMateyFilter.value=users.some(u=>String(u.id)===selectedMatey)?selectedMatey:'';
+  document.getElementById('macos-server-url').value=(d.tailnet||{}).server_url||'';
+  document.getElementById('detail-summary').textContent=d.organization.mode==='isolated'
+    ?'Dedicated, totally isolated tailnet'
+    :'Collaborative Crew with explicit trust and ACLs';
+  let mastLabel=detailTailnet.querySelector('dt');
+  if(mastLabel)mastLabel.textContent='Mast';
+  document.getElementById('detail-users').innerHTML=users.map(u=>{
+    let owned=d.devices.filter(x=>x.user_name===u.name),online=owned.filter(x=>x.online).length;
+    return `<tr><td>${esc(u.name)}</td><td>${owned.length}</td><td><span class="pill ${online?'status-online':'status-offline'}">${online}</span></td><td>${esc(u.id)}</td><td><button type="button" class="theme-toggle" data-view-matey data-id="${esc(u.id)}">Devices</button> <button class="danger" data-remove-matey data-id="${esc(u.id)}" data-name="${esc(u.name)}" data-device-count="${owned.length}">Remove</button></td></tr>`
+  }).join('')||'<tr><td colspan="5">No mateys in this tailnet.</td></tr>';
+  renderFilteredDevices();
+}
+function renderFilteredDevices(){
+  let d=organizationState;if(!d)return;
+  let users=d.headscale_users||[],selected=users.find(u=>String(u.id)===deviceMateyFilter.value);
+  let visible=selected?d.devices.filter(x=>x.user_name===selected.name):d.devices;
+  filteredDeviceCaption.textContent=selected?`Showing devices for ${selected.name} on this Mast.`:`Showing all ${d.devices.length} devices in this Crew.`;
+  detailDevices.innerHTML=visible.map(x=>{
+    let ips=[];try{ips=JSON.parse(x.ip_addresses||'[]')}catch(_){ips=[]}
+    let status=x.online?'online':'offline';
+    return `<tr><td>${esc(x.name)}</td><td>${esc(x.user_name||'Unknown')}</td><td>${ips.map(esc).join('<br>')||'—'}</td><td><span class="pill status-${status}">${status}</span></td><td>${formatLastSeen(x.last_seen)}</td><td>${esc(x.headscale_node_id||'Not linked')}</td><td><button class="danger" data-remove-device data-id="${esc(x.id)}" data-name="${esc(x.name)}" data-linked="${x.headscale_node_id?'true':'false'}">Remove</button></td></tr>`
+  }).join('')||`<tr><td colspan="7">${selected?'No devices for this matey on this Mast.':'No devices recorded for this Crew.'}</td></tr>`;
+}
 async function run(fn){try{await fn();await load()}catch(e){error.textContent=e.message}}
 async function createRegistration(){try{registrationButton.disabled=true;let result=await api('/api/organizations/'+organizationState.organization.id+'/registration','POST',{user_id:registrationUser.value});registrationCommand.value=result.command;registrationResult.hidden=false}catch(e){error.textContent=e.message}finally{registrationButton.disabled=false}}
 async function createHeadscaleUser(){try{let user=await api('/api/organizations/'+organizationState.organization.id+'/users','POST',{name:newUserName.value});newUserName.value='';await load();registrationUser.value=String(user.id)}catch(e){error.textContent=e.message}}
+async function removeMatey(id,name,deviceCount){
+  let impact=deviceCount?` This will also revoke ${deviceCount} device${deviceCount===1?'':'s'}.`:'';
+  if(!window.confirm(`Remove matey “${name}” from this Crew?${impact} Planned device shares and ACL entries will also be removed.`))return;
+  try{await api('/api/organizations/'+organizationState.organization.id+'/users/'+id,'DELETE',{confirm:true,user_name:name,device_count:deviceCount});await load()}
+  catch(e){error.textContent=e.message}
+}
+async function removeDevice(id,name,linked){
+  let impact=linked?' This will revoke the device from its Mast. Planned shares and ACL entries will also be removed.':' This only removes the local inventory record.';
+  if(!window.confirm(`Remove device “${name}” from this Crew?${impact}`))return;
+  try{await api('/api/organizations/'+organizationState.organization.id+'/devices/'+id,'DELETE',{confirm:true,device_name:name});await load()}
+  catch(e){error.textContent=e.message}
+}
 async function registerPendingNode(){let input=document.getElementById('pending-node-key'),result=document.getElementById('pending-node-result'),key=input.value;input.value='';try{await api('/api/organizations/'+organizationState.organization.id+'/pending-node','POST',{user_id:registrationUser.value,key});result.textContent='Device registered. It will appear in the inventory shortly.';setTimeout(()=>load(true),2000)}catch(e){result.textContent=e.message}}
 async function copyRegistration(){await navigator.clipboard.writeText(registrationCommand.value)}
 function setThemeLabel(){themeToggle.textContent=document.documentElement.dataset.theme==='dark'?'Light mode':'Dark mode'}function toggleTheme(){let next=document.documentElement.dataset.theme==='dark'?'light':'dark';document.documentElement.dataset.theme=next;localStorage.setItem('swarmsail-theme',next);setThemeLabel()}
 function configureDns(){run(()=>api('/api/dns/cloudflare','POST',{}))}
 function addOrg(){run(()=>api('/api/organizations','POST',{name:orgName.value,mode:orgMode.value,headscale_instance:orgInstance.value}))}function addConnection(){run(()=>api('/api/connections','POST',{organization_a_id:connectionA.value,organization_b_id:connectionB.value}))}function addDevice(){run(()=>api('/api/devices','POST',{organization_id:deviceOrg.value,name:deviceName.value,headscale_node_id:deviceNode.value}))}function addShare(){run(()=>api('/api/shares','POST',{device_id:shareDevice.value,target_organization_id:shareTarget.value,permission:sharePermission.value}))}function addAcl(){run(()=>api('/api/acls','POST',{source_organization_id:aclSource.value,destination_device_id:aclDevice.value,protocol:aclProtocol.value,ports:aclPorts.value}))}function removeShare(id){run(()=>api('/api/shares/'+id,'DELETE'))}function removeAcl(id){run(()=>api('/api/acls/'+id,'DELETE'))}
 function watchChanges(){let values=new Map([...document.querySelectorAll('[data-live-value]')].map(node=>[node,node.textContent]));let observer=new MutationObserver(records=>{for(let record of records){let node=record.target.nodeType===3?record.target.parentElement:record.target,target=node&&node.closest('[data-live-value]');if(!target)continue;let next=target.textContent,previous=values.get(target);values.set(target,next);if(previous===undefined||previous===next)continue;target.classList.remove('data-changed');void target.offsetWidth;target.classList.add('data-changed');setTimeout(()=>target.classList.remove('data-changed'),2300)}});document.querySelectorAll('[data-live-value]').forEach(node=>observer.observe(node,{subtree:true,childList:true,characterData:true}))}
-const error=document.getElementById('error'),refreshStatus=document.getElementById('refresh-status'),dashboardView=document.getElementById('dashboard-view'),organizationView=document.getElementById('organization-view'),themeToggle=document.getElementById('theme-toggle'),cloudflareStatus=document.getElementById('cloudflare-status'),cloudflareButton=document.getElementById('cloudflare-button'),securityPath=document.getElementById('security-path'),securityNote=document.getElementById('security-note'),orgs=document.getElementById('orgs'),connections=document.getElementById('connections'),devices=document.getElementById('devices'),shares=document.getElementById('shares'),acls=document.getElementById('acls'),sharingNote=document.getElementById('sharing-note'),deviceOrg=document.getElementById('device-org'),connectionA=document.getElementById('connection-a'),connectionB=document.getElementById('connection-b'),shareDevice=document.getElementById('share-device'),shareTarget=document.getElementById('share-target'),aclSource=document.getElementById('acl-source'),aclDevice=document.getElementById('acl-device'),aclProtocol=document.getElementById('acl-protocol'),aclPorts=document.getElementById('acl-ports'),orgInstance=document.getElementById('org-instance'),orgName=document.getElementById('org-name'),orgMode=document.getElementById('org-mode'),deviceName=document.getElementById('device-name'),deviceNode=document.getElementById('device-node'),sharePermission=document.getElementById('share-permission'),registrationUser=document.getElementById('registration-user'),registrationButton=document.getElementById('registration-button'),registrationResult=document.getElementById('registration-result'),registrationCommand=document.getElementById('registration-command'),newUserName=document.getElementById('new-user-name'),detailName=document.getElementById('detail-name'),detailSummary=document.getElementById('detail-summary'),detailMode=document.getElementById('detail-mode'),detailDeviceCount=document.getElementById('detail-device-count'),detailAclCount=document.getElementById('detail-acl-count'),detailConnectionCount=document.getElementById('detail-connection-count'),detailShareCount=document.getElementById('detail-share-count'),detailTailnet=document.getElementById('detail-tailnet'),detailDns=document.getElementById('detail-dns'),detailSplitDns=document.getElementById('detail-split-dns'),detailTrust=document.getElementById('detail-trust'),detailPolicyStatus=document.getElementById('detail-policy-status'),detailAcls=document.getElementById('detail-acls'),detailDevices=document.getElementById('detail-devices');setThemeLabel();load().then(watchChanges);setInterval(refreshIfIdle,10000);document.addEventListener('visibilitychange',refreshIfIdle);window.addEventListener('focus',refreshIfIdle);
+const sidebarCrews=document.getElementById('sidebar-crews'),deviceMateyFilter=document.getElementById('device-matey-filter'),filteredDeviceCaption=document.getElementById('filtered-device-caption'),crewDevicesSection=document.getElementById('crew-devices-section');
+const error=document.getElementById('error'),refreshStatus=document.getElementById('refresh-status'),dashboardView=document.getElementById('dashboard-view'),organizationView=document.getElementById('organization-view'),themeToggle=document.getElementById('theme-toggle'),cloudflareStatus=document.getElementById('cloudflare-status'),cloudflareButton=document.getElementById('cloudflare-button'),securityPath=document.getElementById('security-path'),securityNote=document.getElementById('security-note'),orgs=document.getElementById('orgs'),connections=document.getElementById('connections'),devices=document.getElementById('devices'),shares=document.getElementById('shares'),acls=document.getElementById('acls'),sharingNote=document.getElementById('sharing-note'),deviceOrg=document.getElementById('device-org'),connectionA=document.getElementById('connection-a'),connectionB=document.getElementById('connection-b'),shareDevice=document.getElementById('share-device'),shareTarget=document.getElementById('share-target'),aclSource=document.getElementById('acl-source'),aclDevice=document.getElementById('acl-device'),aclProtocol=document.getElementById('acl-protocol'),aclPorts=document.getElementById('acl-ports'),orgInstance=document.getElementById('org-instance'),orgName=document.getElementById('org-name'),orgMode=document.getElementById('org-mode'),deviceName=document.getElementById('device-name'),deviceNode=document.getElementById('device-node'),sharePermission=document.getElementById('share-permission'),registrationUser=document.getElementById('registration-user'),registrationButton=document.getElementById('registration-button'),registrationResult=document.getElementById('registration-result'),registrationCommand=document.getElementById('registration-command'),newUserName=document.getElementById('new-user-name'),detailName=document.getElementById('detail-name'),detailSummary=document.getElementById('detail-summary'),detailMode=document.getElementById('detail-mode'),detailDeviceCount=document.getElementById('detail-device-count'),detailAclCount=document.getElementById('detail-acl-count'),detailConnectionCount=document.getElementById('detail-connection-count'),detailShareCount=document.getElementById('detail-share-count'),detailTailnet=document.getElementById('detail-tailnet'),detailDns=document.getElementById('detail-dns'),detailSplitDns=document.getElementById('detail-split-dns'),detailTrust=document.getElementById('detail-trust'),detailPolicyStatus=document.getElementById('detail-policy-status'),detailAcls=document.getElementById('detail-acls'),detailDevices=document.getElementById('detail-devices');setThemeLabel();load().then(watchChanges);setInterval(refreshIfIdle,10000);document.addEventListener('visibilitychange',refreshIfIdle);window.addEventListener('focus',refreshIfIdle);window.addEventListener('hashchange',showDashboardPage);deviceMateyFilter.addEventListener('change',renderFilteredDevices);
+document.getElementById('detail-users').addEventListener('click',event=>{
+  let viewButton=event.target.closest('[data-view-matey]');
+  if(viewButton){deviceMateyFilter.value=viewButton.dataset.id;renderFilteredDevices();crewDevicesSection.scrollIntoView({block:'start'});return}
+  let button=event.target.closest('[data-remove-matey]');
+  if(button)removeMatey(button.dataset.id,button.dataset.name,Number(button.dataset.deviceCount||0));
+});
+detailDevices.addEventListener('click',event=>{
+  let button=event.target.closest('[data-remove-device]');
+  if(button)removeDevice(button.dataset.id,button.dataset.name,button.dataset.linked==='true');
+});
 </script></body></html>"""
 
 

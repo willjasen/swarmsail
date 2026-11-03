@@ -2,8 +2,13 @@ FROM caddy:2.11.7-builder-alpine AS builder
 
 RUN xcaddy build v2.11.7 \
     --with github.com/caddy-dns/cloudflare@v0.2.4 \
+    --with github.com/hslatman/caddy-crowdsec-bouncer/http@v0.14.1 \
     --output /usr/bin/caddy
 
 FROM caddy:2.11.7-alpine
 
 COPY --from=builder /usr/bin/caddy /usr/bin/caddy
+COPY scripts/caddy-entrypoint.sh /usr/local/bin/swarmsail-caddy-entrypoint
+RUN chmod 0555 /usr/local/bin/swarmsail-caddy-entrypoint
+ENTRYPOINT ["/usr/local/bin/swarmsail-caddy-entrypoint"]
+CMD ["caddy", "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]

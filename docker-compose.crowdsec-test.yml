@@ -1,0 +1,124 @@
+services:
+  control-plane:
+    build:
+      context: .
+      dockerfile: Dockerfile.orbstack
+    image: swarmsail:crowdsec-test
+    container_name: swarmsail-crowdsec-test-control-plane
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:18787:8787"
+    volumes:
+      - type: bind
+        source: ${SWARMSAIL_CROWDSEC_TEST_DIR:?Set SWARMSAIL_CROWDSEC_TEST_DIR}
+        target: /data
+    read_only: true
+    tmpfs:
+      - /tmp
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8787/healthz', timeout=3).read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+    networks:
+      - test
+
+  headscale-test:
+    image: headscale/headscale:0.29.5
+    container_name: swarmsail-crowdsec-test-headscale
+    restart: unless-stopped
+    command: serve
+    volumes:
+      - ./tests/crowdsec/headscale.yaml:/etc/headscale/config.yaml:ro
+      - headscale-data:/var/lib/headscale
+    networks:
+      - test
+
+  prepare-caddy-logs:
+    image: busybox:1.37.0
+    restart: "no"
+    network_mode: none
+    command:
+      - sh
+      - -c
+      - touch /var/log/caddy/access.log && chmod 660 /var/log/caddy/access.log
+    volumes:
+      - caddy-logs:/var/log/caddy
+
+  crowdsec:
+    image: crowdsecurity/crowdsec:v1.8.1
+    container_name: swarmsail-crowdsec-test-engine
+    restart: unless-stopped
+    environment:
+      TZ: UTC
+      COLLECTIONS: crowdsecurity/caddy
+    volumes:
+      - crowdsec-config:/etc/crowdsec
+      - crowdsec-data:/var/lib/crowdsec/data
+      - ./tests/crowdsec/acquis.yaml:/etc/crowdsec/acquis.yaml:ro
+      - caddy-logs:/var/log/caddy:ro
+    depends_on:
+      prepare-caddy-logs:
+        condition: service_completed_successfully
+    networks:
+      - test
+
+  caddy:
+    build:
+      context: .
+      dockerfile: Dockerfile.caddy
+    image: swarmsail-caddy:crowdsec-test
+    container_name: swarmsail-crowdsec-test-caddy
+    restart: unless-stopped
+    depends_on:
+      - crowdsec
+      - headscale-test
+    ports:
+      - "127.0.0.1:19080:80"
+      - "127.0.0.1:19443:443"
+    volumes:
+      - ./tests/crowdsec/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+      - caddy-logs:/var/log/caddy
+    secrets:
+      - crowdsec-bouncer-api-key
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      test:
+        aliases:
+          - headscale.test
+
+  test-client:
+    image: curlimages/curl:8.12.1
+    container_name: swarmsail-crowdsec-test-client
+    profiles:
+      - verification
+    command: ["sleep", "infinity"]
+    networks:
+      - test
+
+secrets:
+  crowdsec-bouncer-api-key:
+    file: ${SWARMSAIL_CROWDSEC_TEST_DIR:?Set SWARMSAIL_CROWDSEC_TEST_DIR}/caddy-bouncer-api-key
+
+volumes:
+  headscale-data:
+  crowdsec-config:
+  crowdsec-data:
+  caddy-data:
+  caddy-config:
+  caddy-logs:
+
+networks:
+  test:
+    name: swarmsail-crowdsec-test
+    driver: bridge

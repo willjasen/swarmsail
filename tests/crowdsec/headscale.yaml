@@ -1,0 +1,48 @@
+server_url: https://headscale.test
+listen_addr: 0.0.0.0:8080
+metrics_listen_addr: 0.0.0.0:9090
+grpc_listen_addr: 0.0.0.0:50443
+grpc_allow_insecure: false
+noise:
+  private_key_path: /var/lib/headscale/noise_private.key
+prefixes:
+  v4: 100.64.0.0/26
+  v6: fd7a:115c:a1e0::/48
+  allocation: sequential
+derp:
+  server:
+    enabled: false
+    region_id: 999
+    region_code: headscale
+    region_name: Swarmsail CrowdSec Test
+    stun_listen_addr: 0.0.0.0:3478
+    private_key_path: /var/lib/headscale/derp_server_private.key
+    automatically_add_embedded_derp_region: false
+  urls:
+    - https://controlplane.tailscale.com/derpmap/default
+  paths: []
+  auto_update_enabled: false
+database:
+  type: sqlite
+  sqlite:
+    path: /var/lib/headscale/db.sqlite
+    write_ahead_log: true
+policy:
+  mode: database
+dns:
+  magic_dns: true
+  base_domain: crowdsec-test.internal
+  override_local_dns: true
+  nameservers:
+    global:
+      - 1.1.1.1
+    split: {}
+  search_domains: []
+  extra_records: []
+unix_socket: /var/run/headscale/headscale.sock
+unix_socket_permission: "0770"
+log:
+  level: info
+  format: text
+logtail:
+  enabled: false

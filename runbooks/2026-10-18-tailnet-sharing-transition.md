@@ -1,8 +1,8 @@
-# Rawrarr tailnet sharing transition
+# Tailnet sharing transition
 
 ## Purpose and initial state
 
-Prepare Swarmsail's control-plane model for Rawrarr accounts that start with a dedicated isolated tailnet and may later make it shared. The local checkout contained a SQLite `organizations.mode` field and planned connections, device shares, and ACLs. It did not contain `manage_headscale.py` or the Headscale provisioning helpers imported by `swarmsail_web.py`; the live `do2` deployment is separate. See [current do2 setup](do2-current-setup.md) before any deployment.
+Prepare Swarmsail's control-plane model for subscriber accounts that start with a dedicated isolated tailnet and may later make it shared. The local checkout contained a SQLite `organizations.mode` field and planned connections, device shares, and ACLs. It did not contain `manage_headscale.py` or the Headscale provisioning helpers imported by `swarmsail_web.py`; the live `do2` deployment is separate. See [current do2 setup](do2-current-setup.md) before any deployment.
 
 ## Change
 
@@ -23,7 +23,7 @@ If the application change fails, restore the previous release. Do not downgrade 
 
 ## Remaining work
 
-- Add the hosted Rawrarr account, trial/subscription entitlement, and authenticated owner API. Only a verified active trial/subscription should request provisioning.
+- Add the hosted account, trial/subscription entitlement, and authenticated owner API. Only a verified active trial/subscription should request provisioning.
 - Restore or port the Headscale manager and helpers into a complete, testable Swarmsail source tree. Provision exactly one dedicated instance per eligible account with stable account-to-instance mapping and idempotent retries.
 - Design and verify a cross-instance bridge or service proxy for specific device/service pairs. Headscale policies are scoped to their own instance; current `connections`, `shares`, and `acl_rules` are intent records only. Mark a share `applied` only after both sides' route/policy read-back and a real authorized/unauthorized traffic test.
 - Test against a disposable Headscale deployment before updating `do2`.
