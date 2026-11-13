@@ -72,6 +72,12 @@ malicious coordinator.
 
 ## Current implementation status
 
+- The opt-in private `swarmsail-provisioner` service provides account-bound default
+  allocation and durable enrollment/node metadata with a separately supervised
+  local worker. It is not the public coordinator or a remote Docker API.
+  Account DNS/TLS are external prerequisites; the Rawrarr peer transport/profile
+  acceptance remains a readiness gate. See
+  [the default-tailnet runbook](../runbooks/provision-default-tailnet.md).
 - The existing Swarmsail dashboard is a local operator interface. Its
   management API has no user authentication and must not be exposed as a
   public coordinator.

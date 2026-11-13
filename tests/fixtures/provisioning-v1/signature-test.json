@@ -1,0 +1,6 @@
+{
+  "notice": "RFC8032 PUBLIC TEST VECTOR ONLY; historical expired claims, never valid service trust",
+  "header": {"typ": "JWT", "alg": "EdDSA", "kid": "rfc8032-test-only"},
+  "payload_segment": "eyJpc3MiOiJodHRwczovL3Jhd3JhcnIuZXhhbXBsZS50ZXN0IiwiYXVkIjoic3dhcm1zYWlsLXByb3Zpc2lvbmluZy12MSIsImF6cCI6InJhd3JhcnItdGVzdCIsInN1YiI6IjExMTExMTExLTExMTEtNDExMS04MTExLTExMTExMTExMTExMSIsInNjb3BlIjpbInRhaWxuZXQ6ZW5zdXJlIiwidGFpbG5ldDpyZWFkIiwibm9kZTplbnJvbGwiXSwiaWF0IjoxNzAwMDAwMDAwLCJuYmYiOjE3MDAwMDAwMDAsImV4cCI6MTcwMDAwMDMwMCwianRpIjoiZml4dHVyZS10ZXN0LW9ubHkiLCJub2RlX2lkIjoiZm9zc2lsLTAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2NyIsInNldHVwX2ludGVudF9pZCI6IjMzMzMzMzMzLTMzMzMtNDMzMy04MzMzLTMzMzMzMzMzMzMzMyJ9",
+  "signature_segment": "pjNwlQdB6zH3y3NBiZ1a1T3Res0_fN0b9SR4ZA45mFNhLq98ftuHkFkhIEb6ggT9qnt2LKeR-sqMIaZnOwzXCg"
+}

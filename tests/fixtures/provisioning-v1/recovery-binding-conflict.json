@@ -1,0 +1,8 @@
+{
+  "api_version": "1",
+  "error": {
+    "code": "recovery_binding_conflict",
+    "retryable": false
+  },
+  "operation_id": null
+}

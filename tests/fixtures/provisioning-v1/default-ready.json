@@ -1,0 +1,21 @@
+{
+  "api_version": "1",
+  "account_id": "11111111-1111-4111-8111-111111111111",
+  "tailnet_id": "22222222-2222-4222-8222-222222222222",
+  "generation": 1,
+  "operation_id": "77777777-7777-4777-8777-777777777777",
+  "state": "ready",
+  "phase": "complete",
+  "server_url": "https://22222222-2222-4222-8222-222222222222.swarm.rawrarr.net",
+  "readiness": {
+    "checked_at": "2026-01-01T00:00:00Z",
+    "valid_until": "2026-01-01T00:01:00Z"
+  },
+  "node_address_policy": {
+    "version": "1",
+    "ipv4_prefix": "100.64.0.0/26",
+    "ipv6_prefix": null
+  },
+  "error": null,
+  "enrollment_recovery_version": "1"
+}

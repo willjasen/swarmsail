@@ -4,6 +4,8 @@ Swarmsail inventories and manages multiple Headscale control servers (Masts). In
 
 For subscriber accounts, an operator can reserve multiple independent, isolated Headscale tailnets for one opaque account UUID using [`scripts/provision_subscriber.py`](scripts/README.md). Each tailnet remains active; the instances do not share devices or policy. The command previews by default and requires `--apply` to write `instances.json` and the Swarmsail SQLite mappings. The operator must verify an active trial or subscription before invoking it; this checkout does not provide hosted account authentication or payment verification. Reservation alone does not deploy Headscale, configure DNS/HTTPS ingress, or enroll devices.
 
+The opt-in private `swarmsail-provisioner` API and supervised host-local worker add durable account-default allocation, authenticated v1 service contracts, authoritative readiness and recoverable short-lived single-use enrollment. All authenticated accounts, including free accounts, qualify. See [the default-tailnet runbook](runbooks/provision-default-tailnet.md) for trust, externally installed wildcard DNS/TLS, adoption, tests and recovery. The required Rawrarr peer transport fixture is a separate readiness gate; this does not authorize deployment or expose the operator dashboard.
+
 See [the provisioning runbook](runbooks/2026-10-18-subscriber-tailnet-provisioning.md) and [the current do2 deployment](runbooks/do2-current-setup.md) before operating on the live host. Swarmsail DNS records must point directly to the host, without record proxying.
 
 See [the Crew administration runbook](runbooks/manage-crews-and-mateys.md) for device enrollment, user and device revocation, verification, and recovery limits.

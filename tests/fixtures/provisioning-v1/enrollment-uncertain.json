@@ -1,0 +1,9 @@
+{
+  "api_version": "1",
+  "error": {
+    "code": "enrollment_uncertain",
+    "retryable": false
+  },
+  "operation_id": null,
+  "enrollment_id": "44444444-4444-4444-8444-444444444444"
+}
