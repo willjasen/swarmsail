@@ -77,8 +77,13 @@ def next_prefix(instances, account_id):
 
 def plan(config, account_id, kind, eligible_until, server_url, base_domain,
          data_root):
-    account_id = canonical_account_id(account_id)
     active_eligibility(kind, eligible_until)
+    return allocate(config, account_id, server_url, base_domain, data_root)
+
+
+def allocate(config, account_id, server_url, base_domain, data_root):
+    """Neutral allocator; authorization belongs to the calling service."""
+    account_id = canonical_account_id(account_id)
     server_url = https_origin(server_url)
     base_domain = dns_name(base_domain)
     data_root = Path(data_root)

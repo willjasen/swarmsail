@@ -1,0 +1,11 @@
+FROM rust:1.90-slim-bookworm AS builder
+WORKDIR /build
+COPY Cargo.toml Cargo.lock ./
+COPY src ./src
+RUN cargo build --release --locked --bin swarmsail-provisioner
+
+FROM debian:bookworm-slim
+COPY --from=builder /build/target/release/swarmsail-provisioner /usr/local/bin/
+USER 65532:65532
+ENTRYPOINT ["swarmsail-provisioner"]
+CMD ["api", "/run/swarmsail/private-api.json"]

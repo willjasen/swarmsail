@@ -1,0 +1,13 @@
+{
+  "api_version":"1",
+  "enrollment_id":"88888888-8888-4888-8888-888888888888",
+  "node_id":"fossil-0123456789abcdef01234567",
+  "setup_intent_id":"55555555-5555-4555-8555-555555555555",
+  "tailnet_id":"22222222-2222-4222-8222-222222222222",
+  "state":"issuing",
+  "error":null,
+  "recovery":{
+    "version":"1","predecessor_enrollment_id":"44444444-4444-4444-8444-444444444444","predecessor_setup_intent_id":"33333333-3333-4333-8333-333333333333","setup_intent_id":"55555555-5555-4555-8555-555555555555","node_id":"fossil-0123456789abcdef01234567","owner_authorization_id":"66666666-6666-4666-8666-666666666666","setup_evidence_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","account_root_fingerprint":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","role":"metadata","capability_digest":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+  },
+  "recovery_request_id":"99999999-9999-4999-8999-999999999999"
+}

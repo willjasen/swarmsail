@@ -15,3 +15,11 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "net"] }
 url = "2"
 uuid = { version = "1", features = ["v4"] }
 wait-timeout = "0.2"
+aes-gcm = "0.10"
+base64 = "0.22"
+fs2 = "0.4"
+jsonwebtoken = { version = "10", default-features = false, features = ["rust_crypto", "use_pem"] }
+sha2 = "0.10"
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
